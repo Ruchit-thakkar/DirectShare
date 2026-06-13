@@ -1,16 +1,17 @@
 import { ConnectionState, FileMetadata, useStore } from '../store/useStore';
 import { saveChunk, getChunk, clearChunks, addHistory } from './db';
 
-// Pack formatting helpers (Header layout: 28 bytes)
+// Pack formatting helpers (Header layout: 56 bytes)
+// Layout: sessionId(8B) | fileId(8B) | chunkIndex(4B) | totalChunks(4B) | checksum(32B SHA-256)
 export function packChunk(
   sessionId: string, // 8 chars
   fileId: string,    // 8 chars
   chunkIndex: number,
   totalChunks: number,
-  checksum: number,
+  checksum: ArrayBuffer, // 32 bytes SHA-256
   data: ArrayBuffer
 ): ArrayBuffer {
-  const headerBuffer = new ArrayBuffer(28);
+  const headerBuffer = new ArrayBuffer(56);
   const view = new DataView(headerBuffer);
   const encoder = new TextEncoder();
 
@@ -26,11 +27,11 @@ export function packChunk(
 
   view.setUint32(16, chunkIndex, false); // big-endian
   view.setUint32(20, totalChunks, false);
-  view.setUint32(24, checksum, false);
 
-  const packet = new Uint8Array(28 + data.byteLength);
+  const packet = new Uint8Array(56 + data.byteLength);
   packet.set(new Uint8Array(headerBuffer), 0);
-  packet.set(new Uint8Array(data), 28);
+  packet.set(new Uint8Array(checksum), 24);
+  packet.set(new Uint8Array(data), 56);
 
   return packet.buffer;
 }
@@ -40,10 +41,10 @@ export function unpackChunk(packet: ArrayBuffer): {
   fileId: string;
   chunkIndex: number;
   totalChunks: number;
-  checksum: number;
+  checksum: ArrayBuffer;
   data: ArrayBuffer;
 } {
-  const view = new DataView(packet, 0, 28);
+  const view = new DataView(packet, 0, 24);
   const decoder = new TextDecoder();
 
   const sessBytes = new Uint8Array(packet, 0, 8);
@@ -54,24 +55,11 @@ export function unpackChunk(packet: ArrayBuffer): {
 
   const chunkIndex = view.getUint32(16, false);
   const totalChunks = view.getUint32(20, false);
-  const checksum = view.getUint32(24, false);
 
-  const data = packet.slice(28);
+  const checksum = packet.slice(24, 56);
+  const data = packet.slice(56);
 
   return { sessionId, fileId, chunkIndex, totalChunks, checksum, data };
-}
-
-// Adler-32 Checksum
-export function computeAdler32(data: Uint8Array): number {
-  let a = 1;
-  let b = 0;
-  for (let i = 0; i < data.length; i++) {
-    a += data[i];
-    b += a;
-  }
-  a %= 65521;
-  b %= 65521;
-  return (b << 16) | a;
 }
 
 const PC_CONFIG: RTCConfiguration = {
@@ -110,6 +98,11 @@ export class WebRTCTransferManager {
   private activeFilesMeta: FileMetadata[] = [];
   private fileWritables = new Map<string, FileSystemWritableFileStream>(); // For direct disk write
   private fileMetadataMap = new Map<string, FileMetadata>();
+  private fileChunkSizes = new Map<string, number>();
+  private currentFileChunks = new Map<number, { data: ArrayBuffer, checksum: ArrayBuffer }>();
+  private currentFileTotalChunks = 0;
+  private receivedChunksSetMap = new Map<string, Set<number>>();
+  private missingChunksMap = new Map<string, Set<number>>();
 
   // Speed and time calculation
   private speedTimer: any = null;
@@ -169,32 +162,7 @@ export class WebRTCTransferManager {
         useStore.getState().setPeerName(data.hostName);
         useStore.getState().setConnectionState('Connecting');
 
-        // Initialize PeerConnection
-        this.setupPeerConnection();
-
-        // Create manual offer since client connects
-        const offer = await this.pc!.createOffer();
-        await this.pc!.setLocalDescription(offer);
-
-        // Wait for ICE complete
-        useStore.getState().setConnectionState('Connecting');
-        await this.waitForIceGathering();
-
-        // Send local description to Host
-        const resSend = await fetch('/api/signaling', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'send',
-            roomId: this.roomId,
-            peerId: this.peerId,
-            message: { type: 'sdp', sdp: this.pc!.localDescription },
-          }),
-        });
-        const dataSend = await resSend.json();
-        if (dataSend.error) throw new Error(dataSend.error);
-
-        // Start polling for host response
+        // Start polling for host offer (Host initiates connection)
         this.startSignalingPoll();
       } catch (err: any) {
         useStore.getState().setErrorMsg(err.message || 'Failed to join room');
@@ -393,17 +361,51 @@ export class WebRTCTransferManager {
           useStore.getState().setPeerName(data.peerName);
         }
 
-        // Host setup peer connection when client connects
+        // Host setup peer connection when client connects (Host is Offerer)
         if (this.isHost && data.peerName && !this.pc && !this.isConnecting) {
           this.isConnecting = true;
-          this.setupPeerConnection();
+          try {
+            this.setupPeerConnection();
+
+            // Create local offer
+            const offer = await this.pc!.createOffer();
+            await this.pc!.setLocalDescription(offer);
+            await this.waitForIceGathering();
+
+            // Send local offer to Client
+            const resSend = await fetch('/api/signaling', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'send',
+                roomId: this.roomId,
+                peerId: this.peerId,
+                message: { type: 'sdp', sdp: this.pc!.localDescription },
+              }),
+            });
+            const dataSend = await resSend.json();
+            if (dataSend.error) {
+              console.error('Failed to send SDP offer:', dataSend.error);
+            }
+          } catch (err: any) {
+            console.error('Host peer connection setup failed:', err);
+            useStore.getState().setErrorMsg(err.message || 'Failed to establish peer connection');
+            useStore.getState().setConnectionState('Failed');
+          }
         }
 
         for (const msg of data.messages) {
           if (msg.type === 'sdp') {
-            await this.pc!.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-
             if (this.isHost) {
+              // Host receives SDP Answer from Client
+              await this.pc!.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            } else {
+              // Client receives SDP Offer from Host
+              if (!this.pc) {
+                this.setupPeerConnection();
+              }
+              await this.pc!.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+
               const answer = await this.pc!.createAnswer();
               await this.pc!.setLocalDescription(answer);
               await this.waitForIceGathering();
@@ -459,9 +461,11 @@ export class WebRTCTransferManager {
       this.totalBytesTransferred = 0;
       this.lastBytesTransferred = 0;
       this.receivedChunksCount.clear();
+      this.receivedChunksSetMap.clear();
+      this.missingChunksMap.clear();
 
-      // Change state to Receiving and await manual user approval
-      useStore.getState().setConnectionState('Receiving');
+      // Automatically accept the transfer immediately
+      this.acceptTransfer(true);
     } else if (msg.type === 'file-list-accepted') {
       if (msg.accepted) {
         useStore.getState().setConnectionState('Sending');
@@ -479,7 +483,7 @@ export class WebRTCTransferManager {
         useStore.getState().setConnectionState('Failed');
       }
     } else if (msg.type === 'file-start') {
-      const { fileId, name, size, fileType, totalChunks } = msg;
+      const { fileId, name, size, fileType, totalChunks, chunkSize } = msg;
       const fileMeta: FileMetadata = {
         id: fileId,
         name,
@@ -491,6 +495,18 @@ export class WebRTCTransferManager {
       this.fileMetadataMap.set(fileId, fileMeta);
       useStore.getState().updateActiveFileProgress(fileId, 0, 'transferring');
       this.receivedChunksCount.set(fileId, 0);
+      this.receivedChunksSetMap.set(fileId, new Set<number>());
+      this.missingChunksMap.set(fileId, new Set<number>());
+
+      if (chunkSize) {
+        this.fileChunkSizes.set(fileId, chunkSize);
+      }
+
+      // Keep track of the current transferring file's index on the receiver side
+      const fileIndex = this.activeFilesMeta.findIndex((f) => f.id === fileId);
+      if (fileIndex !== -1) {
+        this.currentSendingFileIndex = fileIndex;
+      }
 
       // Check if we can prompt the user to save the file
       if ('showSaveFilePicker' in window) {
@@ -514,6 +530,110 @@ export class WebRTCTransferManager {
       useStore.getState().setErrorMsg('Transfer cancelled by peer.');
       useStore.getState().setConnectionState('Failed');
       this.cleanUp();
+    } else if (msg.type === 'file-sent') {
+      const { fileId, totalChunks } = msg;
+      
+      let receivedSet = this.receivedChunksSetMap.get(fileId);
+      if (!receivedSet) {
+        receivedSet = new Set<number>();
+        this.receivedChunksSetMap.set(fileId, receivedSet);
+      }
+
+      let missingSet = this.missingChunksMap.get(fileId);
+      if (!missingSet) {
+        missingSet = new Set<number>();
+        this.missingChunksMap.set(fileId, missingSet);
+      }
+
+      // Check for any missing chunks that were never received
+      for (let i = 0; i < totalChunks; i++) {
+        if (!receivedSet.has(i)) {
+          missingSet.add(i);
+        }
+      }
+
+      if (missingSet.size > 0) {
+        // Display status
+        useStore.getState().setErrorMsg("Waiting for missing chunks...");
+        console.log(`[Receiver] Missing chunks detected for file ${fileId}. Requesting retransmission of:`, Array.from(missingSet));
+
+        // Request retransmission
+        this.channel?.send(JSON.stringify({
+          type: 'request-retransmission',
+          fileId,
+          missingChunks: Array.from(missingSet),
+        }));
+      } else {
+        // All chunks are present and verified! Clear any error/warning
+        useStore.getState().setErrorMsg(null);
+        useStore.getState().updateActiveFileProgress(fileId, 100, 'completed');
+
+        // Reconstruct file
+        const meta = this.fileMetadataMap.get(fileId);
+        const writable = this.fileWritables.get(fileId);
+        if (meta) {
+          if (writable) {
+            await writable.close();
+            this.fileWritables.delete(fileId);
+          } else {
+            await this.reconstructAndDownload(fileId, totalChunks, meta.name, meta.type);
+          }
+
+          // Write to history
+          await addHistory({
+            fileName: meta.name,
+            fileSize: meta.size,
+            fileType: meta.type,
+            direction: 'receive',
+            peerName: useStore.getState().peerName || 'Sender',
+            status: 'completed',
+            speed: this.totalBytesTransferred / (useStore.getState().transferProgress > 0 ? 1 : 1),
+            timestamp: Date.now(),
+          });
+        }
+
+        // Notify sender of success
+        this.channel?.send(JSON.stringify({
+          type: 'file-success',
+          fileId,
+        }));
+
+        // Check if all files are complete
+        let allComplete = true;
+        useStore.getState().activeFiles.forEach((f) => {
+          if (f.status !== 'completed') allComplete = false;
+        });
+
+        if (allComplete) {
+          useStore.getState().setConnectionState('Completed');
+        }
+      }
+    } else if (msg.type === 'request-retransmission') {
+      const { fileId, missingChunks } = msg;
+      console.log(`[Sender] Peer requested retransmission of chunks for file ${fileId}:`, missingChunks);
+      
+      for (const index of missingChunks) {
+        const chunk = this.currentFileChunks.get(index);
+        if (chunk) {
+          // Pack and send the chunk again
+          const packet = packChunk(this.roomId || 'manual', fileId, index, this.currentFileTotalChunks, chunk.checksum, chunk.data);
+          this.channel?.send(packet);
+          console.log(`[Sender] Resent chunk ${index}`);
+        }
+      }
+      
+      // Once finished resending all requested chunks, send 'file-sent' again
+      this.channel?.send(JSON.stringify({
+        type: 'file-sent',
+        fileId,
+        totalChunks: this.currentFileTotalChunks,
+      }));
+    } else if (msg.type === 'file-success') {
+      const { fileId } = msg;
+      this.currentFileChunks.clear();
+      useStore.getState().updateActiveFileProgress(fileId, 100, 'completed');
+      this.currentSendingFileIndex++;
+      setTimeout(() => this.streamNextFile(), 200);
     }
   }
 
@@ -566,6 +686,24 @@ export class WebRTCTransferManager {
     }));
   }
 
+  private getSafeChunkSize(): number {
+    const preset = useStore.getState().chunkSizePreset;
+    const requestedSize = CHUNK_SIZE_MAP[preset];
+
+    // Determine maxMessageSize of the data channel
+    let maxMsgSize = (this.channel as any)?.maxMessageSize;
+    if (maxMsgSize === undefined || maxMsgSize === 0) {
+      // Fallback: 256KB is the safest standard limit for Chromium data channels
+      maxMsgSize = 262144;
+    }
+
+    // Leave 1024 bytes buffer for headers (28 bytes) and safety margin
+    const maxSafeSize = maxMsgSize - 1024;
+    
+    // Return the minimum of requested and safe size
+    return Math.min(requestedSize, maxSafeSize);
+  }
+
   private streamNextFile() {
     if (this.currentSendingFileIndex >= this.sendingFiles.length) {
       // All files sent!
@@ -594,11 +732,14 @@ export class WebRTCTransferManager {
     const fileId = meta.id;
     const sessionId = this.roomId || 'manual';
 
-    // Get chunk size
-    const preset = useStore.getState().chunkSizePreset;
-    const chunkSize = CHUNK_SIZE_MAP[preset];
+    // Get dynamic safe chunk size
+    const chunkSize = this.getSafeChunkSize();
 
     const totalChunks = Math.ceil(file.size / chunkSize);
+
+    // Store metadata for retransmission
+    this.currentFileTotalChunks = totalChunks;
+    this.currentFileChunks.clear();
 
     // Send file-start metadata
     this.channel?.send(JSON.stringify({
@@ -608,6 +749,7 @@ export class WebRTCTransferManager {
       size: file.size,
       fileType: file.type || 'application/octet-stream',
       totalChunks,
+      chunkSize,
     }));
 
     useStore.getState().updateActiveFileProgress(fileId, 0, 'transferring');
@@ -626,7 +768,7 @@ export class WebRTCTransferManager {
 
     let currentChunkIndex = 0;
     const chunkBuffer: ArrayBuffer[] = [];
-    const chunkChecksums: number[] = [];
+    const chunkChecksums: ArrayBuffer[] = [];
     let isWorkerFinished = false;
 
     const sendChunks = () => {
@@ -673,11 +815,15 @@ export class WebRTCTransferManager {
       }
 
       if (isWorkerFinished && chunkBuffer.length === 0) {
-        // Finished streaming this file
+        // Finished initial streaming of this file
         worker.terminate();
-        useStore.getState().updateActiveFileProgress(fileId, 100, 'completed');
-        this.currentSendingFileIndex++;
-        setTimeout(() => this.streamNextFile(), 200); // Small pause between files
+        
+        // Notify receiver that initial stream is finished
+        this.channel?.send(JSON.stringify({
+          type: 'file-sent',
+          fileId,
+          totalChunks,
+        }));
       }
     };
 
@@ -685,6 +831,12 @@ export class WebRTCTransferManager {
       const { type, payload } = event.data;
 
       if (type === 'CHUNK_GENERATED') {
+        // Store chunk in memory cache for retransmission
+        this.currentFileChunks.set(payload.chunkIndex, {
+          data: payload.data,
+          checksum: payload.checksum,
+        });
+
         chunkBuffer.push(payload.data);
         chunkChecksums.push(payload.checksum);
         sendChunks();
@@ -705,23 +857,68 @@ export class WebRTCTransferManager {
   private async handleBinaryChunk(packet: ArrayBuffer) {
     const { sessionId, fileId, chunkIndex, totalChunks, checksum, data } = unpackChunk(packet);
     
-    // Verify chunk checksum
-    const uint8 = new Uint8Array(data);
-    const localChecksum = computeAdler32(uint8);
+    // Verify chunk checksum (SHA-256)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = new Uint8Array(hashBuffer);
+    const expectedArray = new Uint8Array(checksum);
+    let match = true;
+    for (let i = 0; i < 32; i++) {
+      if (hashArray[i] !== expectedArray[i]) {
+        match = false;
+        break;
+      }
+    }
 
-    if (localChecksum !== checksum) {
-      console.error(`Checksum mismatch at chunk ${chunkIndex} of file ${fileId}!`);
-      useStore.getState().setErrorMsg(`Corrupted file chunk received. integrity check failed.`);
-      useStore.getState().setConnectionState('Failed');
+    if (!match) {
+      console.error("Corrupted chunk:", chunkIndex);
+      console.log("Requesting retransmission");
+
+      let missingSet = this.missingChunksMap.get(fileId);
+      if (!missingSet) {
+        missingSet = new Set<number>();
+        this.missingChunksMap.set(fileId, missingSet);
+      }
+      missingSet.add(chunkIndex);
+
+      useStore.getState().setErrorMsg("A damaged chunk was detected. Requesting retransmission... Transfer will continue automatically.");
       return;
+    }
+
+    console.log(`Chunk ${chunkIndex} received`);
+    console.log("Checksum verification passed");
+
+    let receivedSet = this.receivedChunksSetMap.get(fileId);
+    if (!receivedSet) {
+      receivedSet = new Set<number>();
+      this.receivedChunksSetMap.set(fileId, receivedSet);
+    }
+
+    // Ignore duplicate chunks
+    if (receivedSet.has(chunkIndex)) {
+      return;
+    }
+
+    // Mark chunk as valid/received and remove from missing chunks
+    receivedSet.add(chunkIndex);
+    
+    let missingSet = this.missingChunksMap.get(fileId);
+    if (missingSet) {
+      missingSet.delete(chunkIndex);
+    }
+
+    // Clear error message if integrity issues are resolved
+    const currentError = useStore.getState().errorMsg;
+    if (currentError && 
+        (currentError.includes("damaged chunk") || currentError.includes("Waiting for missing chunks")) && 
+        (!missingSet || missingSet.size === 0)) {
+      useStore.getState().setErrorMsg(null);
     }
 
     // Write chunk
     const writable = this.fileWritables.get(fileId);
+    const chunkSize = this.fileChunkSizes.get(fileId) || CHUNK_SIZE_MAP[useStore.getState().chunkSizePreset];
     if (writable) {
       // Write directly to disk
-      const preset = useStore.getState().chunkSizePreset;
-      const chunkSize = CHUNK_SIZE_MAP[preset];
       const startPos = chunkIndex * chunkSize;
       await writable.write({ type: 'write', position: startPos, data });
     } else {
@@ -729,63 +926,23 @@ export class WebRTCTransferManager {
       await saveChunk(fileId, chunkIndex, data);
     }
 
-    const currentCount = (this.receivedChunksCount.get(fileId) || 0) + 1;
-    this.receivedChunksCount.set(fileId, currentCount);
-
     // Update Progress
     const meta = this.fileMetadataMap.get(fileId);
     if (meta) {
-      const fileProgress = Math.min(Math.round((currentCount / totalChunks) * 100), 100);
+      const fileProgress = Math.min(Math.round((receivedSet.size / totalChunks) * 100), 100);
       useStore.getState().updateActiveFileProgress(fileId, fileProgress);
 
       // Calculate total bytes received
-      const preset = useStore.getState().chunkSizePreset;
-      const chunkSize = CHUNK_SIZE_MAP[preset];
-      
       let receivedBytesSoFar = 0;
-      this.receivedChunksCount.forEach((count, id) => {
+      this.receivedChunksSetMap.forEach((set, id) => {
         const fileMeta = this.fileMetadataMap.get(id);
         if (fileMeta) {
-          const bytes = Math.min(count * chunkSize, fileMeta.size);
+          const fChunkSize = this.fileChunkSizes.get(id) || CHUNK_SIZE_MAP[useStore.getState().chunkSizePreset];
+          const bytes = Math.min(set.size * fChunkSize, fileMeta.size);
           receivedBytesSoFar += bytes;
         }
       });
       this.totalBytesTransferred = receivedBytesSoFar;
-
-      if (currentCount === totalChunks) {
-        // Complete receiving this file!
-        useStore.getState().updateActiveFileProgress(fileId, 100, 'completed');
-        
-        if (writable) {
-          await writable.close();
-          this.fileWritables.delete(fileId);
-        } else {
-          // Reconstruct file from IndexedDB
-          await this.reconstructAndDownload(fileId, totalChunks, meta.name, meta.type);
-        }
-
-        // Write to history
-        await addHistory({
-          fileName: meta.name,
-          fileSize: meta.size,
-          fileType: meta.type,
-          direction: 'receive',
-          peerName: useStore.getState().peerName || 'Sender',
-          status: 'completed',
-          speed: this.totalBytesTransferred / (useStore.getState().transferProgress > 0 ? 1 : 1),
-          timestamp: Date.now(),
-        });
-
-        // Check if all files complete
-        let allComplete = true;
-        useStore.getState().activeFiles.forEach((f) => {
-          if (f.status !== 'completed') allComplete = false;
-        });
-
-        if (allComplete) {
-          useStore.getState().setConnectionState('Completed');
-        }
-      }
     }
   }
 
@@ -913,6 +1070,11 @@ export class WebRTCTransferManager {
     this.receivedChunksCount.clear();
     this.fileWritables.clear();
     this.fileMetadataMap.clear();
+    this.fileChunkSizes.clear();
+    this.currentFileChunks.clear();
+    this.currentFileTotalChunks = 0;
+    this.receivedChunksSetMap.clear();
+    this.missingChunksMap.clear();
     this.activeFilesMeta = [];
   }
 }

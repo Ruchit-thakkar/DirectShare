@@ -1,23 +1,3 @@
-// Adler-32 Checksum Algorithm (Fast)
-function adler32(data) {
-  let a = 1;
-  let b = 0;
-  const len = data.length;
-  
-  // Process in batches of 3854 to prevent 32-bit overflow
-  let i = 0;
-  while (i < len) {
-    const limit = Math.min(i + 3854, len);
-    for (; i < limit; i++) {
-      a += data[i];
-      b += a;
-    }
-    a %= 65521;
-    b %= 65521;
-  }
-  return (b << 16) | a;
-}
-
 self.onmessage = async function (e) {
   const { type, payload } = e.data;
 
@@ -39,8 +19,8 @@ self.onmessage = async function (e) {
         const arrayBuffer = reader.readAsArrayBuffer(slice);
         const uint8 = new Uint8Array(arrayBuffer);
 
-        // Compute Adler-32 checksum
-        const checksum = adler32(uint8);
+        // Compute SHA-256 checksum
+        const hashBuffer = await self.crypto.subtle.digest('SHA-256', uint8);
 
         // Post chunk back to main thread and transfer ownership of the ArrayBuffer
         self.postMessage(
@@ -51,11 +31,11 @@ self.onmessage = async function (e) {
               fileId,
               chunkIndex: i,
               totalChunks,
-              checksum,
+              checksum: hashBuffer,
               data: arrayBuffer,
             },
           },
-          [arrayBuffer] // transfer buffer
+          [arrayBuffer, hashBuffer] // transfer buffers
         );
       }
 
