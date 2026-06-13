@@ -209,7 +209,7 @@ export class WebRTCTransferManager {
     this.pc.oniceconnectionstatechange = () => {
       const state = this.pc?.iceConnectionState;
       console.log('ICE Connection State:', state);
-      if (state === 'connected') {
+      if (state === 'connected' || state === 'completed') {
         useStore.getState().setConnectionState('Connected');
         this.stopSignalingPoll();
         this.startSpeedCalculator();
@@ -328,17 +328,36 @@ export class WebRTCTransferManager {
 
   private waitForIceGathering(): Promise<void> {
     return new Promise((resolve) => {
-      if (this.pc?.iceGatheringState === 'complete') {
+      let resolved = false;
+
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeoutId);
+        if (this.pc) {
+          this.pc.removeEventListener('icegatheringstatechange', check);
+        }
         resolve();
+      };
+
+      if (this.pc?.iceGatheringState === 'complete') {
+        done();
         return;
       }
+
       const check = () => {
         if (this.pc?.iceGatheringState === 'complete') {
-          this.pc.removeEventListener('icegatheringstatechange', check);
-          resolve();
+          done();
         }
       };
+
       this.pc?.addEventListener('icegatheringstatechange', check);
+
+      // Fallback timeout of 2 seconds
+      const timeoutId = setTimeout(() => {
+        console.warn('ICE gathering timed out, proceeding with current candidates.');
+        done();
+      }, 2000);
     });
   }
 
