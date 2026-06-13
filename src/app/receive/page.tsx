@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { useStore } from '@/store/useStore';
 import { transferManager } from '@/utils/webrtc';
 import { formatBytes, formatSpeed, formatTime } from '@/utils/format';
@@ -28,6 +29,10 @@ import {
   X,
   RefreshCw,
   Copy,
+  Home as HomeIcon,
+  ArrowRight,
+  Zap,
+  Activity
 } from 'lucide-react';
 
 function ReceivePageContent() {
@@ -98,14 +103,6 @@ function ReceivePageContent() {
         }
       };
       frame();
-
-      // Automatically clean up and return to initial state after 4 seconds
-      const timeoutId = setTimeout(() => {
-        transferManager.cleanUp();
-        useStore.getState().resetTransfer();
-      }, 4000);
-
-      return () => clearTimeout(timeoutId);
     }
   }, [connectionState]);
 
@@ -142,7 +139,6 @@ function ReceivePageContent() {
     setScannerError(null);
     setShowScanner(true);
 
-    // Wait a brief tick for the DOM element to mount
     setTimeout(async () => {
       try {
         const scanner = new Html5Qrcode('qr-reader');
@@ -155,7 +151,6 @@ function ReceivePageContent() {
             qrbox: { width: 220, height: 220 },
           },
           (decodedText) => {
-            // Check if URL or room code
             let code = decodedText;
             if (decodedText.includes('/receive?room=')) {
               const url = new URL(decodedText);
@@ -170,7 +165,7 @@ function ReceivePageContent() {
               setScannerError('Scanned QR code does not contain a valid DirectShare link');
             }
           },
-          () => {} // Silent parse errors
+          () => {}
         );
       } catch (err: any) {
         console.error('Camera access failed:', err);
@@ -220,7 +215,11 @@ function ReceivePageContent() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Icon mapping helpers
+  const resetPage = () => {
+    transferManager.cleanUp();
+    useStore.getState().resetTransfer();
+  };
+
   const getFileIcon = (type: string) => {
     if (type.startsWith('image/')) return ImageIcon;
     if (type.startsWith('video/')) return Video;
@@ -239,19 +238,27 @@ function ReceivePageContent() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 py-4">
-      <div className="flex items-center justify-between border-b border-white/5 pb-4">
-        <div>
-          <h1 className="text-3xl font-extrabold tracking-tight">Receive Files</h1>
-          <p className="text-slate-400 text-sm mt-1">Connect and accept direct P2P file transfers from nearby devices</p>
+    <div className="max-w-5xl mx-auto space-y-8 py-4 px-2 sm:px-4 relative z-10">
+      
+      {/* Page Header */}
+      {connectionState !== 'Completed' && connectionState !== 'Connected' && connectionState !== 'Receiving' && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-white/10 pb-4 gap-2">
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight">Receive Files</h1>
+            <p className="text-slate-400 text-sm mt-1">Connect and accept direct P2P file transfers from nearby devices</p>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 w-fit">
+            <Activity className="w-3.5 h-3.5 text-secondary animate-pulse" />
+            <span>Receiver Mode Active</span>
+          </div>
         </div>
-      </div>
+      )}
 
       {errorMsg && (
         <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-start gap-3 text-red-400 text-sm">
-          <AlertCircle className="w-5 h-5 shrink-0" />
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
           <div>
-            <span className="font-semibold">Error:</span> {errorMsg}
+            <span className="font-bold">Error:</span> {errorMsg}
           </div>
         </div>
       )}
@@ -259,15 +266,15 @@ function ReceivePageContent() {
       {/* STEP 1: Enter Room Code / Scanning View */}
       {connectionState === 'Waiting' && (
         <motion.div
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 15 }}
           animate={{ opacity: 1, y: 0 }}
           className="grid grid-cols-1 md:grid-cols-3 gap-6"
         >
           {/* Main Join Panel */}
-          <div className="md:col-span-2 glass-panel p-8 rounded-3xl border border-white/5 space-y-6">
+          <div className="md:col-span-2 glass-panel p-8 border border-white/10 shadow-lg space-y-6">
             <h2 className="text-lg font-bold text-slate-200">Connect to Sender</h2>
-            <p className="text-xs text-slate-400">
-              Enter the 6-digit connection code displayed on the sender device or scan their QR code.
+            <p className="text-xs sm:text-sm text-slate-400 leading-relaxed font-light">
+              Enter the 6-digit connection room code displayed on the sender machine or scan their QR code to pair the devices.
             </p>
 
             <div className="flex flex-col sm:flex-row gap-3">
@@ -286,7 +293,7 @@ function ReceivePageContent() {
               <button
                 onClick={() => handleConnect('')}
                 disabled={inputRoomId.length !== 6 || isConnecting}
-                className="px-6 py-3.5 rounded-2xl bg-primary hover:bg-blue-600 text-white font-bold text-sm shadow-md shadow-blue-500/10 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="px-6 py-3.5 rounded-2xl bg-primary hover:bg-blue-600 text-white font-bold text-sm shadow-lg shadow-blue-500/10 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 {isConnecting ? (
                   <>
@@ -301,7 +308,7 @@ function ReceivePageContent() {
 
               <button
                 onClick={showScanner ? stopScanner : startScanner}
-                className="px-5 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700/40 text-slate-300 font-semibold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                className="px-5 py-3.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 font-semibold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Camera className="w-4 h-4 text-secondary" /> Scan QR
               </button>
@@ -314,7 +321,7 @@ function ReceivePageContent() {
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="space-y-4 border border-white/5 bg-slate-950/40 p-5 rounded-2xl relative overflow-hidden"
+                  className="space-y-4 border border-white/10 bg-slate-950/65 p-5 rounded-2xl relative overflow-hidden"
                 >
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">
@@ -343,7 +350,7 @@ function ReceivePageContent() {
             </AnimatePresence>
 
             {/* Offline manual connection option toggle */}
-            <div className="border-t border-white/5 pt-6">
+            <div className="border-t border-white/10 pt-6">
               <button
                 onClick={() => setShowManual(!showManual)}
                 className="text-xs font-semibold text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1.5 mx-auto cursor-pointer"
@@ -358,7 +365,7 @@ function ReceivePageContent() {
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
-                className="space-y-6 text-left border border-white/5 bg-slate-900/30 p-6 rounded-2xl"
+                className="space-y-6 text-left border border-white/10 bg-slate-900/40 p-6 rounded-2xl"
               >
                 <div className="space-y-2">
                   <h3 className="text-sm font-bold text-slate-300">1. Paste Sender SDP Offer</h3>
@@ -369,12 +376,12 @@ function ReceivePageContent() {
                     placeholder="Paste sender offer SDP JSON here..."
                     value={manualOffer}
                     onChange={(e) => setManualOffer(e.target.value)}
-                    className="w-full text-[10px] font-mono p-3 bg-slate-950/80 rounded-xl border border-white/5 resize-none h-[80px]"
+                    className="w-full text-[10px] font-mono p-3 bg-slate-950/80 rounded-xl border border-white/10 resize-none h-[80px]"
                   />
                   <button
                     onClick={handleGenerateManualAnswer}
                     disabled={!manualOffer || isGeneratingAnswer}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-white/5 transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-white/10 transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer"
                   >
                     {isGeneratingAnswer && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                     Generate Answer SDP
@@ -391,12 +398,12 @@ function ReceivePageContent() {
                       <textarea
                         readOnly
                         value={manualAnswer}
-                        className="w-full text-[10px] font-mono p-3 bg-slate-950/80 rounded-xl border border-white/5 resize-none h-[80px]"
+                        className="w-full text-[10px] font-mono p-3 bg-slate-950/80 rounded-xl border border-white/10 resize-none h-[80px]"
                         onClick={(e) => (e.target as HTMLTextAreaElement).select()}
                       />
                       <button
                         onClick={copyAnswerToClipboard}
-                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-white/5 transition-colors flex flex-col items-center justify-center shrink-0 w-16 gap-1 cursor-pointer"
+                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-white/10 transition-colors flex flex-col items-center justify-center shrink-0 w-16 gap-1 cursor-pointer"
                       >
                         {copied ? (
                           <>
@@ -418,13 +425,21 @@ function ReceivePageContent() {
           </div>
 
           {/* Identity instructions */}
-          <div className="glass-panel p-6 rounded-2xl space-y-4 border border-white/5 h-fit text-slate-300">
-            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Instructions</h3>
-            <ul className="text-xs space-y-2.5 list-disc list-inside">
-              <li>Ensure both devices are on the same local network (Wi-Fi or hotspot).</li>
-              <li>Sender should have selected files and generated a code.</li>
-              <li>After connecting, you will be prompted to approve the incoming transfer.</li>
-              <li>Wait for reconstruction to complete before closing this tab.</li>
+          <div className="glass-panel p-6 rounded-3xl border border-white/10 h-fit space-y-4 text-slate-300">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Instructions</h3>
+            <ul className="text-xs space-y-3 list-none">
+              <li className="flex gap-2 items-start">
+                <span className="w-5 h-5 rounded-md bg-white/5 border border-white/10 flex items-center justify-center text-[10px] font-bold text-secondary shrink-0 mt-0.5">1</span>
+                <span>Ensure both machines are connected to the same LAN or hotspot network.</span>
+              </li>
+              <li className="flex gap-2 items-start">
+                <span className="w-5 h-5 rounded-md bg-white/5 border border-white/10 flex items-center justify-center text-[10px] font-bold text-secondary shrink-0 mt-0.5">2</span>
+                <span>Wait for the sender to select their files and share the connection code.</span>
+              </li>
+              <li className="flex gap-2 items-start">
+                <span className="w-5 h-5 rounded-md bg-white/5 border border-white/10 flex items-center justify-center text-[10px] font-bold text-secondary shrink-0 mt-0.5">3</span>
+                <span>Approve the incoming request list. Files stream and assemble directly in IndexedDB browser memory.</span>
+              </li>
             </ul>
           </div>
         </motion.div>
@@ -433,21 +448,27 @@ function ReceivePageContent() {
       {/* STEP 2: Connecting / ICE handshake loading */}
       {(connectionState === 'Connecting' || (connectionState === 'Connected' && activeFiles.length === 0)) && (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="glass-panel p-10 rounded-3xl border border-white/5 text-center max-w-md mx-auto space-y-4"
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="glass-panel p-10 border border-white/10 text-center max-w-md mx-auto space-y-5"
         >
-          <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mx-auto">
-            <Loader2 className="w-5 h-5 animate-spin" />
+          <div className="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mx-auto animate-pulse-slow">
+            <Loader2 className="w-5 h-5 animate-spin text-primary" />
           </div>
           <h2 className="text-lg font-bold text-slate-200">
-            {connectionState === 'Connected' ? 'Retrieving File Information' : 'Connecting to Peer'}
+            {connectionState === 'Connected' ? 'Retrieving File Metadata' : 'Connecting to Sender'}
           </h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs sm:text-sm text-slate-400 font-light leading-relaxed">
             {connectionState === 'Connected'
-              ? 'WebRTC channel opened. Waiting for files list metadata...'
-              : 'Exchanging WebRTC handshake descriptions to establish a direct local socket connection...'}
+              ? 'Data channel opened. Awaiting incoming files list description packet...'
+              : 'P2P WebRTC ICE candidates are exchanging. Establishing direct socket stream connection...'}
           </p>
+          <button
+            onClick={resetPage}
+            className="px-4 py-2 border border-white/10 hover:border-red-500/20 hover:bg-red-500/10 text-slate-400 hover:text-red-400 text-xs font-bold rounded-xl transition-all cursor-pointer mt-2"
+          >
+            Cancel
+          </button>
         </motion.div>
       )}
 
@@ -456,212 +477,231 @@ function ReceivePageContent() {
         <motion.div
           initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="glass-panel p-8 rounded-3xl border border-white/5 max-w-2xl mx-auto space-y-6 shadow-2xl"
+          className="glass-panel p-8 border border-white/10 max-w-2xl mx-auto space-y-6 shadow-2xl relative"
         >
-          <div className="flex items-center gap-3 border-b border-white/5 pb-4">
-            <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
-              <User className="w-5 h-5" />
+          <div className="flex items-center gap-3.5 border-b border-white/10 pb-4">
+            <div className="w-11 h-11 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+              <User className="w-5.5 h-5.5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-200">Incoming Transfer Request</h2>
-              <p className="text-xs text-slate-400">
-                From: <span className="font-bold text-slate-200">{peerName || 'Sender Device'}</span>
+              <h2 className="text-lg font-bold text-slate-200">Incoming Files Invitation</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                From: <span className="font-bold text-slate-200 font-mono">{peerName || 'Sender Device'}</span>
               </p>
             </div>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-4.5">
             <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">
               Files to Receive ({activeFiles.length})
             </span>
-            <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+            
+            <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
               {activeFiles.map((file) => {
                 const Icon = getFileIcon(file.type);
                 const colorClass = getFileIconColor(file.type);
                 return (
                   <div
                     key={file.id}
-                    className="flex items-center justify-between p-3 rounded-2xl bg-slate-900/40 border border-white/5"
+                    className="flex items-center justify-between p-3.5 rounded-3xl bg-slate-900/40 border border-white/5 shadow-sm"
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className={`p-2 rounded-xl border ${colorClass} shrink-0`}>
+                      <div className={`p-2.5 rounded-xl border ${colorClass} shrink-0`}>
                         <Icon className="w-4 h-4" />
                       </div>
                       <span className="text-sm font-semibold text-slate-200 truncate">{file.name}</span>
                     </div>
-                    <span className="text-xs text-slate-400 shrink-0 font-medium">{formatBytes(file.size)}</span>
+                    <span className="text-xs text-slate-400 shrink-0 font-mono">{formatBytes(file.size)}</span>
                   </div>
                 );
               })}
             </div>
-            <div className="text-xs text-slate-400 bg-slate-900/60 p-3 rounded-xl border border-white/5 flex items-center justify-between">
-              <span>Total size:</span>
+
+            <div className="text-xs sm:text-sm text-slate-400 bg-slate-900/60 p-4 rounded-2xl border border-white/10 flex items-center justify-between font-mono">
+              <span className="font-sans text-slate-500 font-semibold">Aggregate Size:</span>
               <span className="font-bold text-slate-200">
                 {formatBytes(activeFiles.reduce((acc, f) => acc + f.size, 0))}
               </span>
             </div>
           </div>
 
-          <div className="flex justify-end gap-3 pt-2">
+          <div className="flex flex-col sm:flex-row justify-end gap-3 pt-2">
             <button
               onClick={handleRejectTransfer}
-              className="px-5 py-2.5 rounded-xl border border-white/10 hover:bg-red-500/10 hover:text-red-400 text-slate-400 font-semibold text-sm transition-colors cursor-pointer"
+              className="w-full sm:w-auto px-5 py-3 rounded-2xl border border-white/10 hover:bg-red-500/10 hover:text-red-400 text-slate-400 font-semibold text-sm transition-colors cursor-pointer text-center"
             >
               Reject
             </button>
             <button
               onClick={handleAcceptTransfer}
-              className="px-6 py-2.5 rounded-xl bg-primary hover:bg-blue-600 text-white font-bold text-sm shadow-md shadow-blue-500/10 transition-colors flex items-center gap-1.5 cursor-pointer"
+              className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-primary hover:bg-blue-600 text-white font-bold text-sm shadow-lg shadow-blue-500/10 transition-colors flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Check className="w-4 h-4" /> Accept Transfer
+              <Check className="w-4 h-4" /> Accept & Receive
             </button>
           </div>
         </motion.div>
       )}
 
-      {/* STEP 4: Active Receive progress stats */}
+      {/* STEP 4: Active Receive progress stats (Transfer Screen) */}
       {((connectionState === 'Connected' && activeFiles.length > 0) ||
-        connectionState === 'Completed') && (
+        (connectionState === 'Receiving' && activeFiles.length > 0 && !activeFiles.some(f => f.status === 'pending'))) && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="grid grid-cols-1 md:grid-cols-3 gap-6"
         >
-          {/* Progress Visuals */}
+          {/* Progress Visuals Card */}
           <div className="md:col-span-2 space-y-6">
-            <div className="glass-panel p-6 rounded-3xl border border-white/5 space-y-6">
-              <div className="flex items-center justify-between border-b border-white/5 pb-4">
+            <div className="glass-panel p-6 border border-white/10 space-y-8 flex flex-col items-center">
+              
+              {/* Header section */}
+              <div className="flex items-center justify-between border-b border-white/10 pb-4 w-full">
                 <div className="flex items-center gap-3">
-                  <div
-                    className={`w-3.5 h-3.5 rounded-full ${
-                      connectionState === 'Completed'
-                        ? 'bg-emerald-400'
-                        : 'bg-primary animate-pulse'
-                    }`}
-                  />
+                  <div className="w-3 h-3 rounded-full bg-secondary animate-pulse" />
                   <div>
                     <h3 className="font-bold text-slate-200">
-                      {connectionState === 'Completed'
-                        ? 'Transfer Completed!'
-                        : `Receiving from ${peerName || 'Peer'}`}
+                      Receiving from {peerName || 'Peer'}
                     </h3>
                     <p className="text-xs text-slate-400">
-                      {connectionState === 'Completed'
-                        ? 'All files successfully saved'
-                        : `${formatSpeed(transferSpeed)} average speed`}
+                      Average Speed: {formatSpeed(transferSpeed)}
                     </p>
                   </div>
                 </div>
 
-                {connectionState !== 'Completed' && (
-                  <button
-                    onClick={() => transferManager.cancel()}
-                    className="p-2 rounded-xl bg-slate-800 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-transparent hover:border-red-500/10 transition-colors cursor-pointer"
-                    title="Cancel Transfer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
+                <button
+                  onClick={() => transferManager.cancel()}
+                  className="p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-red-500/10 text-slate-400 hover:text-red-400 hover:border-red-500/20 transition-all cursor-pointer"
+                  title="Cancel Transfer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                  <span>Overall Progress</span>
-                  <span className="text-primary">{transferProgress}%</span>
-                </div>
-                <div className="w-full bg-slate-900 rounded-full h-3 overflow-hidden border border-white/5">
-                  <motion.div
-                    className="bg-gradient-to-r from-primary to-secondary h-full rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${transferProgress}%` }}
-                    transition={{ duration: 0.3 }}
+              {/* Progress Ring */}
+              <div className="relative w-56 h-56 flex items-center justify-center">
+                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 200 200">
+                  {/* Background Circle */}
+                  <circle
+                    cx="100"
+                    cy="100"
+                    r="85"
+                    className="stroke-slate-800 fill-none"
+                    strokeWidth="10"
                   />
+                  {/* Progress Circle with Gradient */}
+                  <motion.circle
+                    cx="100"
+                    cy="100"
+                    r="85"
+                    className="stroke-secondary fill-none"
+                    strokeWidth="10"
+                    strokeLinecap="round"
+                    strokeDasharray={2 * Math.PI * 85}
+                    animate={{ strokeDashoffset: (2 * Math.PI * 85) - (transferProgress / 100) * (2 * Math.PI * 85) }}
+                    transition={{ duration: 0.3, ease: 'easeOut' }}
+                  />
+                </svg>
+                
+                {/* Central percentage stats */}
+                <div className="absolute flex flex-col items-center justify-center text-center space-y-1">
+                  <span className="text-4xl font-black text-white font-mono">{transferProgress}%</span>
+                  <span className="text-xs text-secondary font-bold tracking-wide flex items-center gap-1">
+                    <Zap className="w-3.5 h-3.5 fill-current animate-bounce" />
+                    {formatSpeed(transferSpeedCurrent)}
+                  </span>
                 </div>
               </div>
 
-              {/* Grid stats */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-                <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">
+              {/* Grid Dashboard */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full text-center">
+                <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/10 space-y-1">
                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                    Current Speed
+                    Speed Peak
                   </span>
-                  <p className="text-sm sm:text-base font-extrabold text-slate-200">
-                    {formatSpeed(transferSpeedCurrent)}
+                  <p className="text-sm font-extrabold text-slate-200">
+                    {formatSpeed(transferSpeedPeak)}
                   </p>
                 </div>
-                <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">
-                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                    Avg / Peak Speed
-                  </span>
-                  <p className="text-sm sm:text-base font-extrabold text-slate-200 truncate">
-                    {formatSpeed(transferSpeed)} / {formatSpeed(transferSpeedPeak)}
-                  </p>
-                </div>
-                <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">
+                <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/10 space-y-1">
                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
                     Time Left
                   </span>
-                  <p className="text-sm sm:text-base font-extrabold text-slate-200">
-                    {connectionState === 'Completed' ? 'Finished' : formatTime(remainingTime)}
+                  <p className="text-sm font-extrabold text-slate-200">
+                    {formatTime(remainingTime)}
                   </p>
                 </div>
-                <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">
+                <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/10 space-y-1">
                   <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                    Status
+                    Progress
                   </span>
-                  <p className="text-sm sm:text-base font-extrabold text-slate-200">
-                    {connectionState}
+                  <p className="text-sm font-extrabold text-slate-200 font-mono">
+                    {transferProgress}%
+                  </p>
+                </div>
+                <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/10 space-y-1">
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                    Finished
+                  </span>
+                  <p className="text-sm font-extrabold text-slate-200">
+                    {activeFiles.filter(f => f.status === 'completed').length} / {activeFiles.length}
                   </p>
                 </div>
               </div>
 
-              {connectionState === 'Completed' && (
-                <button
-                  onClick={() => {
-                    transferManager.cleanUp();
-                    useStore.getState().resetTransfer();
-                  }}
-                  className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-sm transition-colors border border-white/5 cursor-pointer"
-                >
-                  Receive More Files
-                </button>
-              )}
+              {/* Current Active File Info */}
+              <div className="w-full p-4 rounded-2xl bg-white/[0.02] border border-white/10 flex items-center gap-3">
+                <div className="p-2.5 bg-secondary/10 border border-secondary/20 text-secondary rounded-xl shrink-0">
+                  <FileIcon className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-grow">
+                  <div className="text-xs text-slate-400 font-medium">Currently Downloading</div>
+                  <div className="text-sm font-semibold text-slate-200 truncate mt-0.5">
+                    {activeFiles.find(f => f.status === 'transferring')?.name || 'Assembling chunks...'}
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-xs font-mono text-slate-400 font-semibold">
+                    {formatBytes(activeFiles.find(f => f.status === 'transferring')?.size || 0)}
+                  </span>
+                </div>
+              </div>
+
             </div>
           </div>
 
           {/* Right side: File queue showing progress */}
           <div className="space-y-4">
             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">File Queue</h3>
-            <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">
               {activeFiles.map((file) => {
                 const Icon = getFileIcon(file.type);
                 const colorClass = getFileIconColor(file.type);
                 return (
                   <div
                     key={file.id}
-                    className="p-3.5 rounded-2xl bg-slate-800/60 border border-white/5 space-y-3 relative overflow-hidden"
+                    className="p-3.5 rounded-3xl bg-white/5 border border-white/10 space-y-3 relative overflow-hidden shadow-sm animate-fade-in"
                   >
                     <div
-                      className="absolute bottom-0 left-0 h-1 bg-primary/20 transition-all duration-300"
+                      className="absolute bottom-0 left-0 h-1 bg-secondary/20 transition-all duration-300"
                       style={{ width: `${file.progress}%` }}
                     />
 
                     <div className="flex items-center justify-between min-w-0 gap-3 relative z-10">
-                      <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex items-center gap-3.5 min-w-0">
                         <div className={`p-2.5 rounded-xl border ${colorClass} shrink-0`}>
                           <Icon className="w-4 h-4" />
                         </div>
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-slate-200 truncate">{file.name}</p>
-                          <p className="text-xs text-slate-400">{formatBytes(file.size)}</p>
+                          <p className="text-xs text-slate-400 font-mono mt-0.5">{formatBytes(file.size)}</p>
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0">
+                      <div className="text-right shrink-0 font-mono">
                         {file.status === 'completed' ? (
                           <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                         ) : file.status === 'transferring' ? (
-                          <span className="text-xs font-bold text-primary">{file.progress}%</span>
+                          <span className="text-xs font-bold text-secondary">{file.progress}%</span>
                         ) : (
                           <span className="text-xs text-slate-500 font-semibold uppercase">Pending</span>
                         )}
@@ -674,6 +714,73 @@ function ReceivePageContent() {
           </div>
         </motion.div>
       )}
+
+      {/* STEP 5: Success Completion Screen */}
+      {connectionState === 'Completed' && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ type: 'spring', damping: 20 }}
+          className="glass-panel p-10 rounded-3xl border border-white/10 text-center max-w-xl mx-auto space-y-8 shadow-2xl relative overflow-hidden"
+        >
+          {/* Glowing purple bubble */}
+          <div className="absolute right-[-100px] top-[-100px] w-48 h-48 bg-glow-purple pointer-events-none rounded-full" />
+
+          <div className="relative space-y-6">
+            
+            {/* Scaling check circle */}
+            <motion.div
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ delay: 0.2, type: 'spring', stiffness: 200 }}
+              className="w-20 h-20 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center justify-center text-emerald-400 mx-auto shadow-lg shadow-emerald-500/5"
+            >
+              <CheckCircle2 className="w-10 h-10 animate-bounce" />
+            </motion.div>
+
+            <div className="space-y-2.5">
+              <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                Transfer Completed Successfully
+              </h2>
+              <p className="text-sm text-slate-400 leading-relaxed font-light">
+                All incoming files have been successfully received, verified, and saved to your device.
+              </p>
+            </div>
+
+            {/* Files list summary */}
+            <div className="bg-slate-900/60 p-4 rounded-2xl border border-white/5 text-left max-h-[140px] overflow-y-auto space-y-2.5 text-xs">
+              <div className="text-slate-500 font-bold uppercase tracking-wider">Received Files Summary:</div>
+              {activeFiles.map((f, i) => (
+                <div key={i} className="flex justify-between items-center gap-2">
+                  <span className="text-slate-300 truncate font-medium">{f.name}</span>
+                  <span className="text-slate-500 shrink-0 font-mono">{formatBytes(f.size)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+              <button
+                onClick={resetPage}
+                className="w-full sm:w-auto px-6 py-3.5 rounded-2xl text-sm font-bold text-white bg-primary hover:bg-blue-600 shadow-md shadow-blue-500/10 transition-colors cursor-pointer flex items-center justify-center gap-2"
+              >
+                Receive More Files
+                <ArrowRight className="w-4 h-4" />
+              </button>
+
+              <Link href="/" className="w-full sm:w-auto" onClick={resetPage}>
+                <button
+                  className="w-full sm:w-auto px-6 py-3.5 rounded-2xl text-sm font-bold border border-white/10 hover:border-white/20 hover:bg-white/5 text-slate-300 transition-colors cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <HomeIcon className="w-4 h-4" />
+                  Go Home
+                </button>
+              </Link>
+            </div>
+
+          </div>
+        </motion.div>
+      )}
+
     </div>
   );
 }
@@ -683,7 +790,7 @@ export default function ReceivePage() {
     <Suspense fallback={
       <div className="flex items-center justify-center min-h-[50vh] text-slate-400 gap-2">
         <Loader2 className="w-5 h-5 animate-spin text-primary" />
-        Loading...
+        Loading receiver page content...
       </div>
     }>
       <ReceivePageContent />
