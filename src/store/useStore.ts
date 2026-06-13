@@ -27,6 +27,8 @@ interface AppState {
   activeFiles: FileMetadata[];
   transferProgress: number; // 0 to 100
   transferSpeed: number; // in bytes per second
+  transferSpeedCurrent: number;
+  transferSpeedPeak: number;
   remainingTime: number | null; // in seconds
   currentFileIndex: number;
   totalFilesCount: number;
@@ -49,6 +51,8 @@ interface AppState {
   updateTransferMetrics: (metrics: {
     progress: number;
     speed: number;
+    speedCurrent?: number;
+    speedPeak?: number;
     remainingTime: number | null;
     currentFileName: string;
     currentFileIndex: number;
@@ -69,6 +73,8 @@ export const useStore = create<AppState>((set) => ({
   activeFiles: [],
   transferProgress: 0,
   transferSpeed: 0,
+  transferSpeedCurrent: 0,
+  transferSpeedPeak: 0,
   remainingTime: null,
   currentFileIndex: 0,
   totalFilesCount: 0,
@@ -79,7 +85,7 @@ export const useStore = create<AppState>((set) => ({
   peerName: null,
 
   // Settings defaults
-  chunkSizePreset: '256KB',
+  chunkSizePreset: '512KB', // Set default to 512KB for higher performance
   notificationsEnabled: false,
 
   setDisplayName: (name) => set({ displayName: name }),
@@ -103,6 +109,8 @@ export const useStore = create<AppState>((set) => ({
   updateTransferMetrics: (metrics) => set({
     transferProgress: metrics.progress,
     transferSpeed: metrics.speed,
+    transferSpeedCurrent: metrics.speedCurrent || 0,
+    transferSpeedPeak: metrics.speedPeak || 0,
     remainingTime: metrics.remainingTime,
     currentFileName: metrics.currentFileName,
     currentFileIndex: metrics.currentFileIndex,
@@ -121,6 +129,8 @@ export const useStore = create<AppState>((set) => ({
       activeFiles: [],
       transferProgress: 0,
       transferSpeed: 0,
+      transferSpeedCurrent: 0,
+      transferSpeedPeak: 0,
       remainingTime: null,
       currentFileIndex: 0,
       totalFilesCount: 0,

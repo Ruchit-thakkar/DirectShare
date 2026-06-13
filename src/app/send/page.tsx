@@ -38,6 +38,8 @@ export default function SendPage() {
     activeFiles,
     transferProgress,
     transferSpeed,
+    transferSpeedCurrent,
+    transferSpeedPeak,
     remainingTime,
     errorMsg,
     roomId,
@@ -555,13 +557,21 @@ export default function SendPage() {
                 </div>
 
                 {/* Grid stats */}
-                <div className="grid grid-cols-3 gap-4 text-center">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
                   <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">
                     <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                      Speed
+                      Current Speed
                     </span>
                     <p className="text-sm sm:text-base font-extrabold text-slate-200">
-                      {formatSpeed(transferSpeed)}
+                      {formatSpeed(transferSpeedCurrent)}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                      Avg / Peak Speed
+                    </span>
+                    <p className="text-sm sm:text-base font-extrabold text-slate-200 truncate">
+                      {formatSpeed(transferSpeed)} / {formatSpeed(transferSpeedPeak)}
                     </p>
                   </div>
                   <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-1">

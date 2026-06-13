@@ -110,6 +110,15 @@ export class WebRTCTransferManager {
   private totalBytesTransferred = 0;
   private totalSizeToTransfer = 0;
   private speedWindow: number[] = [];
+  private startTime: number | null = null;
+  private peakSpeed = 0;
+
+  // Diagnostic metrics
+  private totalSendTime = 0;
+  private sendCount = 0;
+  private totalVerifyTime = 0;
+  private totalWriteTime = 0;
+  private receiveCount = 0;
 
   constructor() {}
 
@@ -205,6 +214,7 @@ export class WebRTCTransferManager {
 
   private setupDataChannel(channel: RTCDataChannel) {
     channel.binaryType = 'arraybuffer';
+    channel.bufferedAmountLowThreshold = 1 * 1024 * 1024; // 1 MB buffer low threshold for high throughput
 
     channel.onopen = () => {
       console.log('RTC DataChannel Opened!');
@@ -785,7 +795,7 @@ export class WebRTCTransferManager {
 
       while (chunkBuffer.length > 0) {
         const bufferedAmount = this.channel?.bufferedAmount || 0;
-        const limit = 1024 * 1024; // 1 MB buffer threshold
+        const limit = 4 * 1024 * 1024; // 4 MB buffer threshold for streaming pipeline
 
         if (bufferedAmount > limit) {
           // DataChannel buffer full! Pause and wait for bufferedamountlow
@@ -802,7 +812,17 @@ export class WebRTCTransferManager {
 
         // Pack & send binary packet
         const packet = packChunk(sessionId, fileId, index, totalChunks, checksum, data);
+        
+        const tStartSend = performance.now();
         this.channel?.send(packet);
+        const tEndSend = performance.now();
+        this.totalSendTime += (tEndSend - tStartSend);
+        this.sendCount++;
+
+        if (this.sendCount > 0 && this.sendCount % 100 === 0) {
+          console.log(`[Sender Diagnostic] Chunks ${this.sendCount-100}-${this.sendCount} Avg Channel Send Time: ${(this.totalSendTime / 100).toFixed(2)}ms`);
+          this.totalSendTime = 0;
+        }
 
         // Update overall transfer metrics
         const sentForThisFile = (index + 1) * chunkSize;
@@ -864,6 +884,7 @@ export class WebRTCTransferManager {
     const { sessionId, fileId, chunkIndex, totalChunks, checksum, data } = unpackChunk(packet);
     
     // Verify chunk checksum (SHA-256)
+    const tStartVerify = performance.now();
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = new Uint8Array(hashBuffer);
     const expectedArray = new Uint8Array(checksum);
@@ -874,6 +895,8 @@ export class WebRTCTransferManager {
         break;
       }
     }
+    const tEndVerify = performance.now();
+    this.totalVerifyTime += (tEndVerify - tStartVerify);
 
     if (!match) {
       console.error("Corrupted chunk:", chunkIndex);
@@ -923,6 +946,8 @@ export class WebRTCTransferManager {
     // Write chunk
     const writable = this.fileWritables.get(fileId);
     const chunkSize = this.fileChunkSizes.get(fileId) || CHUNK_SIZE_MAP[useStore.getState().chunkSizePreset];
+    
+    const tStartWrite = performance.now();
     if (writable) {
       // Write directly to disk
       const startPos = chunkIndex * chunkSize;
@@ -930,6 +955,15 @@ export class WebRTCTransferManager {
     } else {
       // Fallback: Save in IndexedDB
       await saveChunk(fileId, chunkIndex, data);
+    }
+    const tEndWrite = performance.now();
+    this.totalWriteTime += (tEndWrite - tStartWrite);
+
+    this.receiveCount++;
+    if (this.receiveCount > 0 && this.receiveCount % 100 === 0) {
+      console.log(`[Receiver Diagnostic] Chunks ${this.receiveCount-100}-${this.receiveCount} Avg Verify Time: ${(this.totalVerifyTime / 100).toFixed(2)}ms, Avg Write Time: ${(this.totalWriteTime / 100).toFixed(2)}ms`);
+      this.totalVerifyTime = 0;
+      this.totalWriteTime = 0;
     }
 
     // Update Progress
@@ -1012,24 +1046,37 @@ export class WebRTCTransferManager {
     this.lastBytesTransferred = 0;
     this.totalBytesTransferred = 0;
     this.speedWindow = [];
+    this.startTime = Date.now();
+    this.peakSpeed = 0;
 
     this.speedTimer = setInterval(() => {
       const bytesTransferredThisSecond = Math.max(0, this.totalBytesTransferred - this.lastBytesTransferred);
       this.lastBytesTransferred = this.totalBytesTransferred;
 
-      // Add to window for moving average
+      // Peak Speed
+      if (bytesTransferredThisSecond > this.peakSpeed) {
+        this.peakSpeed = bytesTransferredThisSecond;
+      }
+
+      // Add to window for moving average (Current Speed)
       this.speedWindow.push(bytesTransferredThisSecond);
       if (this.speedWindow.length > 3) this.speedWindow.shift();
+      const currentSpeed = this.speedWindow.reduce((a, b) => a + b, 0) / this.speedWindow.length;
 
-      const avgSpeed = this.speedWindow.reduce((a, b) => a + b, 0) / this.speedWindow.length;
+      // Average Speed over entire transfer
+      const elapsedSeconds = (Date.now() - (this.startTime || Date.now())) / 1000;
+      const averageSpeed = elapsedSeconds > 0 ? this.totalBytesTransferred / elapsedSeconds : currentSpeed;
+
       const progress = this.totalSizeToTransfer > 0 ? (this.totalBytesTransferred / this.totalSizeToTransfer) * 100 : 0;
       
       const remainingBytes = Math.max(0, this.totalSizeToTransfer - this.totalBytesTransferred);
-      const remainingTime = avgSpeed > 0 ? Math.round(remainingBytes / avgSpeed) : null;
+      const remainingTime = currentSpeed > 0 ? Math.round(remainingBytes / currentSpeed) : null;
 
       useStore.getState().updateTransferMetrics({
         progress: Math.min(Math.round(progress), 100),
-        speed: avgSpeed,
+        speed: averageSpeed, // We use average speed for overall
+        speedCurrent: currentSpeed,
+        speedPeak: this.peakSpeed,
         remainingTime,
         currentFileName: useStore.getState().activeFiles[this.currentSendingFileIndex]?.name || '',
         currentFileIndex: Math.min(this.currentSendingFileIndex + 1, useStore.getState().totalFilesCount),
@@ -1082,6 +1129,13 @@ export class WebRTCTransferManager {
     this.receivedChunksSetMap.clear();
     this.missingChunksMap.clear();
     this.activeFilesMeta = [];
+    this.totalSendTime = 0;
+    this.sendCount = 0;
+    this.totalVerifyTime = 0;
+    this.totalWriteTime = 0;
+    this.receiveCount = 0;
+    this.peakSpeed = 0;
+    this.startTime = null;
   }
 }
 
