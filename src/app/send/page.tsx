@@ -315,7 +315,7 @@ export default function SendPage() {
 
       {/* STEP 3: Connecting / Discovery Panel */}
       {selectedFiles.length > 0 &&
-        (connectionState === 'Discovering' || connectionState === 'Connecting') && (
+        (connectionState === 'Discovering' || connectionState === 'Connecting' || connectionState === 'Connected') && (
           <motion.div
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -325,9 +325,13 @@ export default function SendPage() {
               <div className="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary animate-pulse-slow">
                 <Loader2 className="w-6 h-6 animate-spin" />
               </div>
-              <h2 className="text-xl font-extrabold text-slate-100">Waiting for Connection</h2>
+              <h2 className="text-xl font-extrabold text-slate-100">
+                {connectionState === 'Connected' ? 'Connected!' : 'Waiting for Connection'}
+              </h2>
               <p className="text-sm text-slate-400">
-                To receive files, scan the QR code or enter the code on the receiving device
+                {connectionState === 'Connected'
+                  ? `Connected to ${peerName || 'Receiver'}. Waiting for them to approve and accept the files...`
+                  : 'To receive files, scan the QR code or enter the code on the receiving device'}
               </p>
             </div>
 

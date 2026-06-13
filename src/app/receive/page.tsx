@@ -421,7 +421,7 @@ function ReceivePageContent() {
       )}
 
       {/* STEP 2: Connecting / ICE handshake loading */}
-      {connectionState === 'Connecting' && (
+      {(connectionState === 'Connecting' || (connectionState === 'Connected' && activeFiles.length === 0)) && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -430,9 +430,13 @@ function ReceivePageContent() {
           <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mx-auto">
             <Loader2 className="w-5 h-5 animate-spin" />
           </div>
-          <h2 className="text-lg font-bold text-slate-200">Connecting to Peer</h2>
+          <h2 className="text-lg font-bold text-slate-200">
+            {connectionState === 'Connected' ? 'Retrieving File Information' : 'Connecting to Peer'}
+          </h2>
           <p className="text-xs text-slate-400">
-            Exchanging WebRTC handshake descriptions to establish a direct local socket connection...
+            {connectionState === 'Connected'
+              ? 'WebRTC channel opened. Waiting for files list metadata...'
+              : 'Exchanging WebRTC handshake descriptions to establish a direct local socket connection...'}
           </p>
         </motion.div>
       )}

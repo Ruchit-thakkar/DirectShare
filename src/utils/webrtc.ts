@@ -181,7 +181,7 @@ export class WebRTCTransferManager {
         await this.waitForIceGathering();
 
         // Send local description to Host
-        await fetch('/api/signaling', {
+        const resSend = await fetch('/api/signaling', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -191,6 +191,8 @@ export class WebRTCTransferManager {
             message: { type: 'sdp', sdp: this.pc!.localDescription },
           }),
         });
+        const dataSend = await resSend.json();
+        if (dataSend.error) throw new Error(dataSend.error);
 
         // Start polling for host response
         this.startSignalingPoll();
@@ -241,6 +243,14 @@ export class WebRTCTransferManager {
       // Send exchange peer display names
       const name = useStore.getState().displayName;
       channel.send(JSON.stringify({ type: 'peer-info', displayName: name }));
+
+      // If host, automatically initiate the file transmission handshake by sending the selected files list
+      if (this.isHost) {
+        const selected = useStore.getState().selectedFiles;
+        if (selected.length > 0) {
+          this.sendSelectedFiles(selected);
+        }
+      }
     };
 
     channel.onclose = () => {
@@ -350,7 +360,15 @@ export class WebRTCTransferManager {
           }),
         });
         const data = await res.json();
-        if (data.error) return;
+        if (data.error) {
+          if (data.error === 'Room not found') {
+            this.stopSignalingPoll();
+            useStore.getState().setErrorMsg('Signaling session expired or room not found.');
+            useStore.getState().setConnectionState('Failed');
+            this.cleanUp();
+          }
+          return;
+        }
 
         if (data.peerName) {
           useStore.getState().setPeerName(data.peerName);
@@ -371,7 +389,7 @@ export class WebRTCTransferManager {
               await this.pc!.setLocalDescription(answer);
               await this.waitForIceGathering();
 
-              await fetch('/api/signaling', {
+              const resSend = await fetch('/api/signaling', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -381,6 +399,10 @@ export class WebRTCTransferManager {
                   message: { type: 'sdp', sdp: this.pc!.localDescription },
                 }),
               });
+              const dataSend = await resSend.json();
+              if (dataSend.error) {
+                console.error('Failed to send SDP answer:', dataSend.error);
+              }
             }
           }
         }

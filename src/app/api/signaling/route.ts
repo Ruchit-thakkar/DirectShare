@@ -14,8 +14,8 @@ interface Room {
 
 // Global in-memory storage for rooms
 // Ensures the store persists across Next.js dev server hot-reloads
-const globalForSignaling = global as unknown as {
-  signalingRooms: Map<string, Room>;
+const globalForSignaling = globalThis as unknown as {
+  signalingRooms?: Map<string, Room>;
 };
 
 if (!globalForSignaling.signalingRooms) {
@@ -38,6 +38,8 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const { action, roomId, peerId, displayName, message } = body;
+    
+    console.log(`[Signaling] Action: ${action}, RoomId: ${roomId || 'N/A'}, PeerId: ${peerId || 'N/A'}, Active Rooms:`, Array.from(rooms.keys()));
 
     if (action === 'create') {
       const newRoomId = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit code
@@ -126,6 +128,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (error: any) {
+    console.error('[Signaling Error]:', error);
     return NextResponse.json(
       { error: error.message || 'Internal Server Error' },
       { status: 500 }
