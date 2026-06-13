@@ -182,9 +182,11 @@ export class WebRTCTransferManager {
         this.stopSignalingPoll();
         this.startSpeedCalculator();
       } else if (state === 'disconnected' || state === 'failed') {
-        useStore.getState().setConnectionState('Failed');
-        useStore.getState().setErrorMsg('Direct WebRTC connection lost.');
-        this.cleanUp();
+        if (useStore.getState().connectionState !== 'Completed') {
+          useStore.getState().setConnectionState('Failed');
+          useStore.getState().setErrorMsg('Direct WebRTC connection lost.');
+          this.cleanUp();
+        }
       }
     };
 
@@ -223,14 +225,18 @@ export class WebRTCTransferManager {
 
     channel.onclose = () => {
       console.log('RTC DataChannel Closed!');
-      useStore.getState().setConnectionState('Waiting');
-      this.cleanUp();
+      if (useStore.getState().connectionState !== 'Completed') {
+        useStore.getState().setConnectionState('Waiting');
+        this.cleanUp();
+      }
     };
 
     channel.onerror = (e) => {
       console.error('Data Channel Error:', e);
-      useStore.getState().setErrorMsg('Data Channel error occurred');
-      useStore.getState().setConnectionState('Failed');
+      if (useStore.getState().connectionState !== 'Completed') {
+        useStore.getState().setErrorMsg('Data Channel error occurred');
+        useStore.getState().setConnectionState('Failed');
+      }
     };
 
     channel.onmessage = async (event) => {

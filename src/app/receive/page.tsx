@@ -96,6 +96,14 @@ function ReceivePageContent() {
         }
       };
       frame();
+
+      // Automatically clean up and return to initial state after 4 seconds
+      const timeoutId = setTimeout(() => {
+        transferManager.cleanUp();
+        useStore.getState().resetTransfer();
+      }, 4000);
+
+      return () => clearTimeout(timeoutId);
     }
   }, [connectionState]);
 
