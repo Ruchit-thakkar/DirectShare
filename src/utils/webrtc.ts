@@ -242,9 +242,11 @@ export class WebRTCTransferManager {
     };
 
     channel.onerror = (e) => {
-      console.error('Data Channel Error:', e);
+      const err = (e as any).error;
+      console.error('Data Channel Error:', err || e);
+      const errMsg = err ? `${err.message} (${err.errorDetail})` : 'Data Channel error occurred';
       if (useStore.getState().connectionState !== 'Completed') {
-        useStore.getState().setErrorMsg('Data Channel error occurred');
+        useStore.getState().setErrorMsg(errMsg);
         useStore.getState().setConnectionState('Failed');
       }
     };
@@ -706,8 +708,8 @@ export class WebRTCTransferManager {
     const preset = useStore.getState().chunkSizePreset;
     const requestedSize = CHUNK_SIZE_MAP[preset];
 
-    // Determine maxMessageSize of the data channel
-    let maxMsgSize = (this.channel as any)?.maxMessageSize;
+    // Determine maxMessageSize of the peer connection SCTP transport
+    let maxMsgSize = this.pc?.sctp?.maxMessageSize;
     if (maxMsgSize === undefined || maxMsgSize === 0) {
       // Fallback: 256KB is the safest standard limit for Chromium data channels
       maxMsgSize = 262144;

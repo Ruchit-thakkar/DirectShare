@@ -1,36 +1,18 @@
 'use client';
 
 import Link from 'next/link';
-import { motion } from 'framer-motion';
-import { 
-  Send, 
-  Download, 
-  Zap, 
-  Shield, 
-  Laptop, 
-  Database, 
-  Layers, 
-  Activity 
+import {
+  Send,
+  Download,
+  Zap,
+  Shield,
+  Laptop,
+  Database,
+  Layers,
+  Activity
 } from 'lucide-react';
 
 export default function Home() {
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: { staggerChildren: 0.1, delayChildren: 0.15 }
-    }
-  };
-
-  const itemVariants = {
-    hidden: { y: 30, opacity: 0 },
-    visible: { 
-      y: 0, 
-      opacity: 1, 
-      transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] as const } 
-    }
-  };
-
   const features = [
     {
       icon: Zap,
@@ -71,95 +53,69 @@ export default function Home() {
   ];
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[75vh] py-8 space-y-16 relative">
-      
+    <div className="flex flex-col items-center justify-center min-h-[70vh] py-6 space-y-12">
+
       {/* Hero Section */}
-      <motion.div 
-        initial={{ opacity: 0, y: -30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] as const }}
-        className="text-center max-w-3xl mx-auto space-y-6 relative z-10"
-      >
-        <motion.div 
-          initial={{ scale: 0.95, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ delay: 0.1, duration: 0.5 }}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/25 text-xs font-semibold text-primary mb-2 shadow-sm"
-        >
-          <span className="flex h-2.5 w-2.5 rounded-full bg-primary animate-ping shrink-0" />
+      <div className="text-center max-w-3xl mx-auto space-y-5">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 border border-primary/20 text-xs font-semibold text-primary mb-1 shadow-sm">
+          <span className="flex h-2 w-2 rounded-full bg-primary shrink-0" />
           Direct Device-to-Device Sharing
-        </motion.div>
-        
-        <h1 className="text-5xl sm:text-7xl font-extrabold tracking-tight bg-gradient-to-b from-white via-slate-100 to-slate-400 bg-clip-text text-transparent leading-none py-1">
+        </div>
+
+        <div className="flex justify-center pt-2">
+          <img src="/ds.png" alt="DirectShare Logo" className="w-24 h-24 object-contain hover:scale-105 transition-transform duration-300" />
+        </div>
+
+        <h1 className="text-4xl sm:text-6xl font-extrabold tracking-tight text-white leading-tight">
           DirectShare
         </h1>
-        
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-200 tracking-tight">
+
+        <h2 className="text-xl sm:text-2xl font-bold text-slate-200 tracking-tight">
           Fast, Secure and Private File Sharing
         </h2>
-        
-        <p className="text-base sm:text-lg text-slate-400 max-w-2xl mx-auto font-light leading-relaxed">
+
+        <p className="text-sm sm:text-base text-slate-400 max-w-xl mx-auto font-light leading-relaxed">
           Transfer files directly between nearby devices over Wi-Fi or Hotspot without uploading anything to the cloud.
         </p>
 
         {/* CTA buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-6 max-w-md mx-auto">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3.5 pt-4 max-w-md mx-auto px-4">
           <Link href="/send" className="w-full sm:w-auto">
-            <motion.button 
-              whileHover={{ scale: 1.03, y: -2 }}
-              whileTap={{ scale: 0.98 }}
-              className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl bg-primary hover:bg-blue-600 text-white font-bold text-sm shadow-xl shadow-primary/20 hover:shadow-primary/30 transition-all cursor-pointer"
-            >
-              <Send className="w-4.5 h-4.5" />
+            <button className="w-full sm:w-auto flex items-center justify-center gap-2 px-7 py-3.5 rounded-2xl bg-primary hover:bg-blue-600 text-white font-bold text-sm transition-colors cursor-pointer shadow-md shadow-blue-500/10">
+              <Send className="w-4 h-4" />
               Send Files
-            </motion.button>
+            </button>
           </Link>
-          
+
           <Link href="/receive" className="w-full sm:w-auto">
-            <motion.button 
-              whileHover={{ scale: 1.03, y: -2 }}
-              whileTap={{ scale: 0.98 }}
-              className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 text-slate-200 font-bold text-sm transition-all cursor-pointer backdrop-blur-md"
-            >
-              <Download className="w-4.5 h-4.5 text-secondary animate-bounce" />
+            <button className="w-full sm:w-auto flex items-center justify-center gap-2 px-7 py-3.5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 text-slate-200 font-bold text-sm transition-colors cursor-pointer">
+              <Download className="w-4 h-4 text-secondary" />
               Receive Files
-            </motion.button>
+            </button>
           </Link>
         </div>
-      </motion.div>
+      </div>
 
       {/* Features Grid */}
-      <motion.div 
-        variants={containerVariants}
-        initial="hidden"
-        animate="visible"
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full max-w-6xl relative z-10"
-      >
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4.5 w-full max-w-6xl px-4">
         {features.map((feat) => {
           const Icon = feat.icon;
           return (
-            <motion.div
+            <div
               key={feat.title}
-              variants={itemVariants}
-              whileHover={{ 
-                y: -6, 
-                borderColor: 'rgba(255, 255, 255, 0.15)', 
-                backgroundColor: 'rgba(255, 255, 255, 0.08)',
-                boxShadow: '0 20px 40px -15px rgba(0,0,0,0.5)'
-              }}
-              className="glass-panel p-6.5 rounded-3xl transition-all duration-300 flex flex-col gap-4 border border-white/10 backdrop-blur-xl bg-white/5"
+              className="p-5 rounded-2xl border border-white/10 bg-[#1E293B]"
             >
-              <div className={`p-3 rounded-xl border ${feat.color} shrink-0 w-fit shadow-inner`}>
-                <Icon className="w-5.5 h-5.5" />
+              <div className={`p-2.5 rounded-xl border ${feat.color} shrink-0 w-fit mb-3`}>
+                <Icon className="w-4.5 h-4.5" />
               </div>
-              <div className="space-y-2">
-                <h3 className="text-base font-bold text-slate-200">{feat.title}</h3>
-                <p className="text-xs sm:text-sm text-slate-400 font-light leading-relaxed">{feat.desc}</p>
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-slate-200">{feat.title}</h3>
+                <p className="text-xs text-slate-400 font-light leading-relaxed">{feat.desc}</p>
               </div>
-            </motion.div>
+            </div>
           );
         })}
-      </motion.div>
+      </div>
 
     </div>
   );

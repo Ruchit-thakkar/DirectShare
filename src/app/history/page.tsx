@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { getHistory, clearHistory, HistoryEntry } from '@/utils/db';
 import { formatBytes, formatSpeed } from '@/utils/format';
-import { motion } from 'framer-motion';
 import {
   History,
   Trash2,
@@ -134,11 +133,9 @@ export default function HistoryPage() {
             const Icon = getFileIcon(log.fileType);
             const colorClass = getFileIconColor(log.fileType);
             return (
-              <motion.div
+              <div
                 key={log.id}
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="glass-panel p-4.5 rounded-2xl border border-white/5 hover:border-white/10 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                className="glass-panel p-4 rounded-xl border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
               >
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className={`p-2.5 rounded-xl border ${colorClass} shrink-0`}>
@@ -180,7 +177,7 @@ export default function HistoryPage() {
                     )}
                   </div>
                 </div>
-              </motion.div>
+              </div>
             );
           })}
         </div>

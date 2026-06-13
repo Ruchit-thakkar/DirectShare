@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Mail, Share2 } from 'lucide-react';
+import { Mail } from 'lucide-react';
 import { 
   InstagramIcon, 
   LinkedinIcon, 
@@ -56,9 +56,7 @@ export default function Footer() {
         {/* Navigation & Branding row */}
         <div className="flex flex-col md:flex-row items-center justify-between gap-6">
           <Link href="/" className="flex items-center gap-2.5 group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-primary to-secondary flex items-center justify-center text-white group-hover:scale-105 transition-transform duration-300">
-              <Share2 className="w-4 h-4" />
-            </div>
+            <img src="/ds.png" alt="DirectShare Logo" className="w-8 h-8 object-contain group-hover:scale-105 transition-transform duration-300" />
             <span className="font-bold text-slate-300 text-lg group-hover:text-white transition-colors duration-300">DirectShare</span>
           </Link>
 
