@@ -5,11 +5,11 @@ import Link from 'next/link';
 import { useStore } from '@/store/useStore';
 import { transferManager } from '@/utils/webrtc';
 import { formatBytes, formatSpeed, formatTime } from '@/utils/format';
+import { getFileTypeVisualsByFileName, getFileCategory } from '@/utils/fileTypes';
 import QRCode from 'qrcode';
 import confetti from 'canvas-confetti';
 import {
   Upload,
-  File as FileIcon,
   X,
   Send,
   Loader2,
@@ -21,16 +21,24 @@ import {
   Play,
   RefreshCw,
   QrCode,
-  FileText,
-  Video,
-  Image as ImageIcon,
-  FileArchive,
-  Music,
   ArrowRight,
   Home as HomeIcon,
   Activity,
+  XCircle,
   Zap
 } from 'lucide-react';
+
+function ImageThumbnail({ file }: { file: File }) {
+  const [src, setSrc] = useState<string>('');
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  if (!src) return <div className="w-8 h-8 rounded-lg bg-slate-800 animate-pulse" />;
+  return <img src={src} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10" />;
+}
 
 export default function SendPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -59,6 +67,7 @@ export default function SendPage() {
   const [manualAnswer, setManualAnswer] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
   const [isGeneratingManual, setIsGeneratingManual] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   // Initialize room for LAN signaling
   useEffect(() => {
@@ -123,12 +132,24 @@ export default function SendPage() {
     }
   };
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    setIsDragging(true);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    setIsDragging(false);
     if (e.dataTransfer.files) {
       const files = Array.from(e.dataTransfer.files);
       setSelectedFiles([...selectedFiles, ...files]);
@@ -181,24 +202,6 @@ export default function SendPage() {
     useStore.getState().resetTransfer();
   };
 
-  // Icon selector based on file type
-  const getFileIcon = (type: string) => {
-    if (type.startsWith('image/')) return ImageIcon;
-    if (type.startsWith('video/')) return Video;
-    if (type.startsWith('audio/')) return Music;
-    if (type.startsWith('text/')) return FileText;
-    if (type.includes('zip') || type.includes('tar') || type.includes('compressed')) return FileArchive;
-    return FileIcon;
-  };
-
-  const getFileIconColor = (type: string) => {
-    if (type.startsWith('image/')) return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
-    if (type.startsWith('video/')) return 'text-amber-400 bg-amber-500/10 border-amber-500/20';
-    if (type.startsWith('audio/')) return 'text-pink-400 bg-pink-500/10 border-pink-500/20';
-    if (type.startsWith('text/')) return 'text-blue-400 bg-blue-500/10 border-blue-500/20';
-    return 'text-slate-400 bg-slate-500/10 border-slate-500/20';
-  };
-
   const getChunkStats = () => {
     const presetSizeMap = { '128KB': 128 * 1024, '256KB': 256 * 1024, '512KB': 512 * 1024, '1MB': 1024 * 1024 };
     const chunkSize = presetSizeMap[chunkSizePreset] || 256 * 1024;
@@ -216,8 +219,8 @@ export default function SendPage() {
     <div className="max-w-4xl mx-auto space-y-6 py-2 px-3 sm:px-4 relative z-10">
       
       {/* Page Header */}
-      {connectionState !== 'Completed' && connectionState !== 'Sending' && connectionState !== 'Paused' && (
-        <div className="flex justify-between items-center border-b border-white/10 pb-3">
+      {connectionState !== 'Completed' && connectionState !== 'Sending' && connectionState !== 'Paused' && connectionState !== 'Failed' && (
+        <div className="flex justify-between items-center border-b border-white/10 pb-3 animate-fade-in">
           <div className="flex items-center gap-3">
             <img src="/ds.png" alt="DirectShare Logo" className="w-8 h-8 object-contain" />
             <div>
@@ -232,8 +235,8 @@ export default function SendPage() {
         </div>
       )}
 
-      {errorMsg && (
-        <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-3 text-red-400 text-xs sm:text-sm">
+      {errorMsg && connectionState !== 'Failed' && (
+        <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-3 text-red-400 text-xs sm:text-sm animate-fade-in">
           <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
           <div>
             <span className="font-bold">Error:</span> {errorMsg}
@@ -242,9 +245,15 @@ export default function SendPage() {
       )}
 
       {/* STEP 1: File Upload Box */}
-      {selectedFiles.length === 0 && (
+      {selectedFiles.length === 0 && connectionState === 'Waiting' && (
         <div
-          className="border border-dashed border-white/20 hover:border-primary/50 rounded-2xl p-8 sm:p-12 text-center bg-white/[0.01] hover:bg-white/[0.02] cursor-pointer transition-all duration-200 group"
+          className={`border border-dashed rounded-2xl p-8 sm:p-12 text-center transition-all duration-300 cursor-pointer group relative overflow-hidden animate-fade-in ${
+            isDragging
+              ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10 scale-[1.02]'
+              : 'border-white/20 hover:border-primary/50 bg-white/[0.01] hover:bg-white/[0.02]'
+          }`}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
@@ -256,13 +265,17 @@ export default function SendPage() {
             className="hidden"
             onChange={handleFileChange}
           />
-          <div className="flex flex-col items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 group-hover:text-primary group-hover:border-primary/30 transition-colors">
-              <Upload className="w-6 h-6" />
+          <div className="flex flex-col items-center gap-3.5 pointer-events-none">
+            <div className={`w-12 h-12 rounded-xl bg-white/5 border flex items-center justify-center transition-colors ${
+              isDragging ? 'text-primary border-primary/40' : 'text-slate-400 border-white/10 group-hover:text-primary group-hover:border-primary/30'
+            }`}>
+              <Upload className={`w-6 h-6 ${isDragging ? 'animate-bounce' : ''}`} />
             </div>
             <div className="space-y-1">
-              <p className="text-sm sm:text-base font-bold text-slate-200">Drag & drop files here, or click to browse</p>
-              <p className="text-[11px] text-slate-500">Supports images, videos, documents, and files up to 10GB+</p>
+              <p className="text-sm sm:text-base font-bold text-slate-200">
+                {isDragging ? 'Drop your files here!' : 'Drag & drop files here, or click to browse'}
+              </p>
+              <p className="text-[11px] text-slate-500">Supports documents, images, video, audio, archives, databases, design and 3D models of any size</p>
             </div>
           </div>
         </div>
@@ -270,7 +283,7 @@ export default function SendPage() {
 
       {/* STEP 2: Selected Files and Discovery */}
       {selectedFiles.length > 0 && connectionState === 'Waiting' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-fade-in">
           {/* File list */}
           <div className="md:col-span-2 space-y-3">
             <div className="flex justify-between items-center px-1">
@@ -285,20 +298,30 @@ export default function SendPage() {
 
             <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
               {selectedFiles.map((file, i) => {
-                const Icon = getFileIcon(file.type);
-                const colorClass = getFileIconColor(file.type);
+                const { icon: Icon, colorClass, category } = getFileTypeVisualsByFileName(file.name, file.type);
+                const isImage = category === 'Image';
                 return (
                   <div
                     key={i}
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/10"
+                    className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/[0.08] transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div className={`p-2 rounded-lg border ${colorClass} shrink-0`}>
-                        <Icon className="w-4 h-4" />
-                      </div>
+                      {isImage ? (
+                        <div className="shrink-0">
+                          <ImageThumbnail file={file} />
+                        </div>
+                      ) : (
+                        <div className={`p-2 rounded-lg border ${colorClass} shrink-0`}>
+                          <Icon className="w-4 h-4" />
+                        </div>
+                      )}
                       <div className="min-w-0">
                         <p className="text-xs sm:text-sm font-semibold text-slate-200 truncate">{file.name}</p>
-                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">{formatBytes(file.size)}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-slate-500 font-mono">{formatBytes(file.size)}</span>
+                          <span className="text-[10px] text-slate-600">•</span>
+                          <span className="text-[10px] text-primary/70 font-semibold uppercase tracking-wider">{category}</span>
+                        </div>
                       </div>
                     </div>
                     <button
@@ -340,7 +363,7 @@ export default function SendPage() {
             </div>
           </div>
 
-          {/* Quick instructions / Display identity */}
+          {/* Quick instructions */}
           <div className="p-5 rounded-2xl bg-[#1E293B] border border-white/10 h-fit space-y-3">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Instructions</h3>
             <ul className="text-xs text-slate-300 space-y-2.5">
@@ -364,7 +387,7 @@ export default function SendPage() {
       {/* STEP 3: Connecting / Discovery Panel (Radar Connection Screen) */}
       {selectedFiles.length > 0 &&
         (connectionState === 'Discovering' || connectionState === 'Connecting' || connectionState === 'Connected') && (
-          <div className="p-6 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-xl mx-auto space-y-6">
+          <div className="p-6 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-xl mx-auto space-y-6 animate-fade-in">
             
             <div className="flex flex-col items-center gap-4">
               <div className="relative flex items-center justify-center w-20 h-20">
@@ -492,7 +515,7 @@ export default function SendPage() {
       {/* STEP 4: Active Sending Progress / Metrics Panel (Lightweight Transfer Screen) */}
       {selectedFiles.length > 0 &&
         (connectionState === 'Sending' || connectionState === 'Paused') && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-fade-in">
             {/* Left side: stats and linear progress bar */}
             <div className="md:col-span-2 space-y-4">
               <div className="p-5 rounded-2xl bg-[#1E293B] border border-white/10 space-y-5">
@@ -617,8 +640,7 @@ export default function SendPage() {
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">Queue</h3>
               <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
                 {activeFiles.map((file) => {
-                  const Icon = getFileIcon(file.type);
-                  const colorClass = getFileIconColor(file.type);
+                  const { icon: Icon, colorClass, category } = getFileTypeVisualsByFileName(file.name, file.type);
                   return (
                     <div
                       key={file.id}
@@ -631,12 +653,20 @@ export default function SendPage() {
 
                       <div className="flex items-center justify-between min-w-0 gap-2 relative z-10">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
-                            <Icon className="w-3.5 h-3.5" />
-                          </div>
+                          {file.thumbnail ? (
+                            <img src={file.thumbnail} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10 shrink-0" />
+                          ) : (
+                            <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
+                              <Icon className="w-3.5 h-3.5" />
+                            </div>
+                          )}
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-slate-200 truncate">{file.name}</p>
-                            <p className="text-[10px] text-slate-500 font-mono mt-0.5">{formatBytes(file.size)}</p>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[10px] text-slate-500 font-mono">{formatBytes(file.size)}</span>
+                              <span className="text-[10px] text-slate-600">•</span>
+                              <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider">{file.category || category}</span>
+                            </div>
                           </div>
                         </div>
 
@@ -662,7 +692,7 @@ export default function SendPage() {
 
       {/* STEP 5: Completion Screen */}
       {connectionState === 'Completed' && (
-        <div className="p-8 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-md mx-auto space-y-6 shadow-xl">
+        <div className="p-8 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-md mx-auto space-y-6 shadow-xl animate-fade-in">
           
           <div className="w-14 h-14 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center justify-center text-emerald-400 mx-auto shadow-inner">
             <CheckCircle2 className="w-8 h-8" />
@@ -696,6 +726,45 @@ export default function SendPage() {
             >
               Send Another
               <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+            
+            <Link href="/" className="w-full sm:w-auto" onClick={resetPage}>
+              <button
+                className="w-full sm:w-auto px-5 py-3 rounded-xl text-xs font-bold border border-white/10 hover:bg-white/5 text-slate-300 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <HomeIcon className="w-3.5 h-3.5" />
+                Go Home
+              </button>
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 6: Failure Screen */}
+      {connectionState === 'Failed' && (
+        <div className="p-8 rounded-2xl bg-[#1E293B] border border-red-500/20 text-center max-w-md mx-auto space-y-6 shadow-xl animate-fade-in">
+          
+          <div className="w-14 h-14 bg-red-500/10 border border-red-500/20 rounded-full flex items-center justify-center text-red-400 mx-auto shadow-inner animate-pulse">
+            <XCircle className="w-8 h-8" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-bold text-white tracking-tight">
+              Transfer Failed
+            </h2>
+            <p className="text-xs text-slate-400 leading-relaxed font-light">
+              {errorMsg || 'An error occurred during peer-to-peer file transmission.'}
+            </p>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-1 w-full font-sans">
+            <button
+              onClick={resetPage}
+              className="w-full sm:w-auto px-5 py-3 rounded-xl text-xs font-bold text-white bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Try Again
             </button>
             
             <Link href="/" className="w-full sm:w-auto" onClick={resetPage}>

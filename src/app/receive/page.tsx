@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useStore } from '@/store/useStore';
 import { transferManager } from '@/utils/webrtc';
 import { formatBytes, formatSpeed, formatTime } from '@/utils/format';
+import { getFileTypeVisualsByFileName } from '@/utils/fileTypes';
 import { Html5Qrcode } from 'html5-qrcode';
 import confetti from 'canvas-confetti';
 import {
@@ -17,21 +18,13 @@ import {
   AlertCircle,
   XCircle,
   User,
-  FolderOpen,
-  File as FileIcon,
-  Video,
-  Image as ImageIcon,
-  FileArchive,
-  Music,
-  FileText,
-  Check,
   X,
   RefreshCw,
-  Copy,
   Home as HomeIcon,
   ArrowRight,
-  Zap,
-  Activity
+  Activity,
+  Check,
+  Zap
 } from 'lucide-react';
 
 function ReceivePageContent() {
@@ -219,29 +212,12 @@ function ReceivePageContent() {
     useStore.getState().resetTransfer();
   };
 
-  const getFileIcon = (type: string) => {
-    if (type.startsWith('image/')) return ImageIcon;
-    if (type.startsWith('video/')) return Video;
-    if (type.startsWith('audio/')) return Music;
-    if (type.startsWith('text/')) return FileText;
-    if (type.includes('zip') || type.includes('tar') || type.includes('compressed')) return FileArchive;
-    return FileIcon;
-  };
-
-  const getFileIconColor = (type: string) => {
-    if (type.startsWith('image/')) return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
-    if (type.startsWith('video/')) return 'text-amber-400 bg-amber-500/10 border-amber-500/20';
-    if (type.startsWith('audio/')) return 'text-pink-400 bg-pink-500/10 border-pink-500/20';
-    if (type.startsWith('text/')) return 'text-blue-400 bg-blue-500/10 border-blue-500/20';
-    return 'text-slate-400 bg-slate-500/10 border-slate-500/20';
-  };
-
   return (
     <div className="max-w-4xl mx-auto space-y-6 py-2 px-3 sm:px-4 relative z-10">
       
       {/* Page Header */}
-      {connectionState !== 'Completed' && connectionState !== 'Connected' && connectionState !== 'Receiving' && (
-        <div className="flex justify-between items-center border-b border-white/10 pb-3">
+      {connectionState !== 'Completed' && connectionState !== 'Connected' && connectionState !== 'Receiving' && connectionState !== 'Failed' && (
+        <div className="flex justify-between items-center border-b border-white/10 pb-3 animate-fade-in">
           <div className="flex items-center gap-3">
             <img src="/ds.png" alt="DirectShare Logo" className="w-8 h-8 object-contain" />
             <div>
@@ -256,8 +232,8 @@ function ReceivePageContent() {
         </div>
       )}
 
-      {errorMsg && (
-        <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-3 text-red-400 text-xs sm:text-sm">
+      {errorMsg && connectionState !== 'Failed' && (
+        <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-3 text-red-400 text-xs sm:text-sm animate-fade-in">
           <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
           <div>
             <span className="font-bold">Error:</span> {errorMsg}
@@ -267,7 +243,7 @@ function ReceivePageContent() {
 
       {/* STEP 1: Enter Room Code / Scanning View */}
       {connectionState === 'Waiting' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-fade-in">
           {/* Main Join Panel */}
           <div className="md:col-span-2 p-6 rounded-2xl bg-[#1E293B] border border-white/10 shadow-md space-y-5">
             <h2 className="text-sm font-bold text-slate-200">Connect to Sender</h2>
@@ -418,7 +394,7 @@ function ReceivePageContent() {
 
       {/* STEP 2: Connecting / ICE handshake loading */}
       {(connectionState === 'Connecting' || (connectionState === 'Connected' && activeFiles.length === 0)) && (
-        <div className="p-8 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-md mx-auto space-y-5">
+        <div className="p-8 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-md mx-auto space-y-5 animate-fade-in">
           <div className="relative flex items-center justify-center w-20 h-20 mx-auto">
             <div className="absolute inset-0 rounded-full border border-primary/30 border-t-primary animate-spin" />
             <div className="relative w-16 h-16 rounded-full bg-[#0F172A] border border-white/10 flex items-center justify-center overflow-hidden shadow-inner">
@@ -442,7 +418,7 @@ function ReceivePageContent() {
 
       {/* STEP 3: Transfer approval modal dialog */}
       {connectionState === 'Receiving' && activeFiles.length > 0 && (
-        <div className="p-6 rounded-2xl bg-[#1E293B] border border-white/10 max-w-xl mx-auto space-y-5 shadow-xl">
+        <div className="p-6 rounded-2xl bg-[#1E293B] border border-white/10 max-w-xl mx-auto space-y-5 shadow-xl animate-fade-in">
           <div className="flex items-center gap-3 border-b border-white/10 pb-3">
             <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
               <User className="w-5 h-5" />
@@ -462,18 +438,24 @@ function ReceivePageContent() {
             
             <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
               {activeFiles.map((file) => {
-                const Icon = getFileIcon(file.type);
-                const colorClass = getFileIconColor(file.type);
+                const { icon: Icon, colorClass, category } = getFileTypeVisualsByFileName(file.name, file.type);
                 return (
                   <div
                     key={file.id}
-                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/40 border border-white/5"
+                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/40 border border-white/5 hover:bg-slate-900/60 transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div className={`p-2 rounded-lg border ${colorClass} shrink-0`}>
-                        <Icon className="w-3.5 h-3.5" />
+                      {file.thumbnail ? (
+                        <img src={file.thumbnail} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10 shrink-0" />
+                      ) : (
+                        <div className={`p-2 rounded-lg border ${colorClass} shrink-0`}>
+                          <Icon className="w-3.5 h-3.5" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <span className="text-xs sm:text-sm font-semibold text-slate-200 truncate block">{file.name}</span>
+                        <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider block mt-0.5">{file.category || category}</span>
                       </div>
-                      <span className="text-xs sm:text-sm font-semibold text-slate-200 truncate">{file.name}</span>
                     </div>
                     <span className="text-xs text-slate-400 shrink-0 font-mono">{formatBytes(file.size)}</span>
                   </div>
@@ -509,7 +491,7 @@ function ReceivePageContent() {
       {/* STEP 4: Active Receive progress stats (Lightweight Transfer Screen) */}
       {((connectionState === 'Connected' && activeFiles.length > 0) ||
         (connectionState === 'Receiving' && activeFiles.length > 0 && !activeFiles.some(f => f.status === 'pending'))) && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 animate-fade-in">
           {/* Progress Visuals Card */}
           <div className="md:col-span-2 space-y-4">
             <div className="p-5 rounded-2xl bg-[#1E293B] border border-white/10 space-y-5">
@@ -611,12 +593,11 @@ function ReceivePageContent() {
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">Queue</h3>
             <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-1">
               {activeFiles.map((file) => {
-                const Icon = getFileIcon(file.type);
-                const colorClass = getFileIconColor(file.type);
+                const { icon: Icon, colorClass, category } = getFileTypeVisualsByFileName(file.name, file.type);
                 return (
                   <div
                     key={file.id}
-                    className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-2 relative overflow-hidden shadow-sm animate-fade-in"
+                    className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-2 relative overflow-hidden shadow-sm"
                   >
                     <div
                       className="absolute bottom-0 left-0 h-0.5 bg-secondary/20 transition-all duration-300"
@@ -625,12 +606,20 @@ function ReceivePageContent() {
 
                     <div className="flex items-center justify-between min-w-0 gap-2 relative z-10">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
-                          <Icon className="w-3.5 h-3.5" />
-                        </div>
+                        {file.thumbnail ? (
+                          <img src={file.thumbnail} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10 shrink-0" />
+                        ) : (
+                          <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
+                            <Icon className="w-3.5 h-3.5" />
+                          </div>
+                        )}
                         <div className="min-w-0">
                           <p className="text-xs font-semibold text-slate-200 truncate">{file.name}</p>
-                          <p className="text-[10px] text-slate-500 font-mono mt-0.5">{formatBytes(file.size)}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-[10px] text-slate-500 font-mono">{formatBytes(file.size)}</span>
+                            <span className="text-[10px] text-slate-600">•</span>
+                            <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider">{file.category || category}</span>
+                          </div>
                         </div>
                       </div>
 
@@ -654,7 +643,7 @@ function ReceivePageContent() {
 
       {/* STEP 5: Success Completion Screen */}
       {connectionState === 'Completed' && (
-        <div className="p-8 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-md mx-auto space-y-6 shadow-xl">
+        <div className="p-8 rounded-2xl bg-[#1E293B] border border-white/10 text-center max-w-md mx-auto space-y-6 shadow-xl animate-fade-in">
           
           <div className="w-14 h-14 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center justify-center text-emerald-400 mx-auto shadow-inner">
             <CheckCircle2 className="w-8 h-8" />
@@ -699,6 +688,45 @@ function ReceivePageContent() {
             </Link>
           </div>
 
+        </div>
+      )}
+
+      {/* STEP 6: Failure Screen */}
+      {connectionState === 'Failed' && (
+        <div className="p-8 rounded-2xl bg-[#1E293B] border border-red-500/20 text-center max-w-md mx-auto space-y-6 shadow-xl animate-fade-in">
+          
+          <div className="w-14 h-14 bg-red-500/10 border border-red-500/20 rounded-full flex items-center justify-center text-red-400 mx-auto shadow-inner animate-pulse">
+            <XCircle className="w-8 h-8" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-bold text-white tracking-tight">
+              Transfer Failed
+            </h2>
+            <p className="text-xs text-slate-400 leading-relaxed font-light">
+              {errorMsg || 'An error occurred during peer-to-peer file transmission.'}
+            </p>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-1 w-full font-sans">
+            <button
+              onClick={resetPage}
+              className="w-full sm:w-auto px-5 py-3 rounded-xl text-xs font-bold text-white bg-red-500 hover:bg-red-600 transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Try Again
+            </button>
+            
+            <Link href="/" className="w-full sm:w-auto" onClick={resetPage}>
+              <button
+                className="w-full sm:w-auto px-5 py-3 rounded-xl text-xs font-bold border border-white/10 hover:bg-white/5 text-slate-300 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <HomeIcon className="w-3.5 h-3.5" />
+                Go Home
+              </button>
+            </Link>
+          </div>
         </div>
       )}
 

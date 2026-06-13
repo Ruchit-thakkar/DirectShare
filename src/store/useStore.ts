@@ -18,6 +18,8 @@ export interface FileMetadata {
   type: string;
   progress: number;
   status: 'pending' | 'transferring' | 'completed' | 'failed' | 'paused';
+  thumbnail?: string;
+  category?: string;
 }
 
 interface AppState {

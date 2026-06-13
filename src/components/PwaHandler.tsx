@@ -18,44 +18,18 @@ export default function PwaHandler() {
   const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
-    // 1. Service Worker Registration & Unregistration
+    // 1. Service Worker Registration
     if ('serviceWorker' in navigator) {
-      if (process.env.NODE_ENV === 'production') {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker
-            .register('/sw.js')
-            .then((registration) => {
-              console.log('DirectShare SW registered: ', registration.scope);
-            })
-            .catch((registrationError) => {
-              console.error('DirectShare SW registration failed: ', registrationError);
-            });
-        });
-      } else {
-        // In development, clean up service workers and caches to prevent infinite Fast Refresh reload loops
-        if (typeof window !== 'undefined' && 'caches' in window) {
-          caches.keys().then((keys) => {
-            keys.forEach((key) => {
-              caches.delete(key).then(() => {
-                console.log('SW Cache deleted in dev mode:', key);
-              });
-            });
+      window.addEventListener('load', () => {
+        navigator.serviceWorker
+          .register('/sw.js')
+          .then((registration) => {
+            console.log('DirectShare SW registered: ', registration.scope);
+          })
+          .catch((registrationError) => {
+            console.error('DirectShare SW registration failed: ', registrationError);
           });
-        }
-        navigator.serviceWorker.getRegistrations().then((registrations) => {
-          if (registrations.length > 0) {
-            const isCleared = sessionStorage.getItem('directshare_sw_cleared');
-            if (!isCleared) {
-              for (const registration of registrations) {
-                registration.unregister();
-              }
-              sessionStorage.setItem('directshare_sw_cleared', 'true');
-              console.log('Service worker found and unregistered. Performing one-time reload to clear state...');
-              window.location.reload();
-            }
-          }
-        });
-      }
+      });
     }
 
     // 2. Offline Status Handler

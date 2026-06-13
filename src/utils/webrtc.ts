@@ -1,5 +1,6 @@
 import { ConnectionState, FileMetadata, useStore } from '../store/useStore';
 import { saveChunk, getChunk, clearChunks, addHistory } from './db';
+import { getFileCategory, generateThumbnail } from './fileTypes';
 
 // Pack formatting helpers (Header layout: 56 bytes)
 // Layout: sessionId(8B) | fileId(8B) | chunkIndex(4B) | totalChunks(4B) | checksum(32B SHA-256)
@@ -471,6 +472,8 @@ export class WebRTCTransferManager {
         type: f.type,
         progress: 0,
         status: 'pending',
+        category: f.category,
+        thumbnail: f.thumbnail,
       }));
       useStore.getState().setActiveFiles(this.activeFilesMeta);
 
@@ -482,8 +485,8 @@ export class WebRTCTransferManager {
       this.receivedChunksSetMap.clear();
       this.missingChunksMap.clear();
 
-      // Automatically accept the transfer immediately
-      this.acceptTransfer(true);
+      // Set connection state to Receiving so user gets the Accept/Reject invitation prompt
+      useStore.getState().setConnectionState('Receiving');
     } else if (msg.type === 'file-list-accepted') {
       if (msg.accepted) {
         useStore.getState().setConnectionState('Sending');
@@ -502,6 +505,7 @@ export class WebRTCTransferManager {
       }
     } else if (msg.type === 'file-start') {
       const { fileId, name, size, fileType, totalChunks, chunkSize } = msg;
+      const existingMeta = this.activeFilesMeta.find((f) => f.id === fileId);
       const fileMeta: FileMetadata = {
         id: fileId,
         name,
@@ -509,6 +513,8 @@ export class WebRTCTransferManager {
         type: fileType || 'application/octet-stream',
         progress: 0,
         status: 'transferring',
+        category: existingMeta?.category,
+        thumbnail: existingMeta?.thumbnail,
       };
       this.fileMetadataMap.set(fileId, fileMeta);
       useStore.getState().updateActiveFileProgress(fileId, 0, 'transferring');
@@ -685,14 +691,24 @@ export class WebRTCTransferManager {
 
   async sendSelectedFiles(files: File[]) {
     this.sendingFiles = files;
-    const metaList = files.map((f, i) => ({
-      id: Math.random().toString(36).substring(2, 10), // 8 chars
-      name: f.name,
-      size: f.size,
-      type: f.type || 'application/octet-stream',
-      progress: 0,
-      status: 'pending' as const,
-    }));
+    
+    const metaList = await Promise.all(
+      files.map(async (f) => {
+        const id = Math.random().toString(36).substring(2, 10); // 8 chars
+        const category = getFileCategory(f.name, f.type);
+        const thumbnail = await generateThumbnail(f);
+        return {
+          id,
+          name: f.name,
+          size: f.size,
+          type: f.type || 'application/octet-stream',
+          progress: 0,
+          status: 'pending' as const,
+          category,
+          thumbnail,
+        };
+      })
+    );
 
     useStore.getState().setSelectedFiles(files);
     useStore.getState().setActiveFiles(metaList);
@@ -700,7 +716,14 @@ export class WebRTCTransferManager {
     // Send file list to peer
     this.channel?.send(JSON.stringify({
       type: 'file-list',
-      files: metaList,
+      files: metaList.map((m) => ({
+        id: m.id,
+        name: m.name,
+        size: m.size,
+        type: m.type,
+        category: m.category,
+        thumbnail: m.thumbnail,
+      })),
     }));
   }
 
@@ -989,6 +1012,24 @@ export class WebRTCTransferManager {
   }
 
   private async reconstructAndDownload(fileId: string, totalChunks: number, fileName: string, fileType: string) {
+    const meta = this.fileMetadataMap.get(fileId);
+    const fileSize = meta ? meta.size : 0;
+
+    // Check if Service Worker is active and ready to intercept streaming download
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      const streamUrl = `/api/download-stream?fileId=${fileId}&name=${encodeURIComponent(fileName)}&type=${encodeURIComponent(fileType)}&size=${fileSize}&totalChunks=${totalChunks}`;
+      
+      // Trigger download
+      const a = document.createElement('a');
+      a.href = streamUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+
+    // Fallback: standard Blob reconstruction (in case service worker is not active)
     const chunkArray: ArrayBuffer[] = [];
     for (let i = 0; i < totalChunks; i++) {
       const chunk = await getChunk(fileId, i);
