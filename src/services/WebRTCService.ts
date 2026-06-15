@@ -1,14 +1,25 @@
-const PC_CONFIG: RTCConfiguration = {
-  iceServers: [
+const getIceServers = (): RTCIceServer[] => {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('directshare_ice_servers');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('[WebRTCService] Failed to parse custom ICE servers from localStorage:', e);
+      }
+    }
+  }
+  return [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-  ],
+  ];
 };
 
 export class WebRTCService {
   private pc: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private isHost = false;
+  private heartbeatInterval: any = null;
 
   // Callbacks
   public onConnectionStateChange: ((state: RTCIceConnectionState) => void) | null = null;
@@ -20,7 +31,9 @@ export class WebRTCService {
 
   setupConnection(isHost: boolean) {
     this.isHost = isHost;
-    this.pc = new RTCPeerConnection(PC_CONFIG);
+    this.pc = new RTCPeerConnection({
+      iceServers: getIceServers(),
+    });
 
     this.pc.oniceconnectionstatechange = () => {
       if (this.pc && this.onConnectionStateChange) {
@@ -45,10 +58,12 @@ export class WebRTCService {
     channel.bufferedAmountLowThreshold = 1 * 1024 * 1024; // 1 MB low threshold
 
     channel.onopen = () => {
+      this.startHeartbeat();
       this.onChannelOpen?.();
     };
 
     channel.onclose = () => {
+      this.stopHeartbeat();
       this.onChannelClose?.();
     };
 
@@ -64,12 +79,50 @@ export class WebRTCService {
       } else if (typeof event.data === 'string') {
         try {
           const msg = JSON.parse(event.data);
-          this.onControlMessage?.(msg);
+          if (msg.type === 'ping') {
+            if (this.channel && this.channel.readyState === 'open') {
+              this.channel.send(JSON.stringify({
+                type: 'pong',
+                timestamp: msg.timestamp
+              }));
+            }
+          } else if (msg.type === 'pong') {
+            const sampleRTT = Date.now() - msg.timestamp;
+            this.onControlMessage?.({
+              type: 'rtt-update',
+              rtt: sampleRTT
+            });
+          } else {
+            this.onControlMessage?.(msg);
+          }
         } catch (e) {
           console.error('[WebRTCService] Control parsing error:', e);
         }
       }
     };
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatInterval = setInterval(() => {
+      if (this.channel && this.channel.readyState === 'open') {
+        try {
+          this.channel.send(JSON.stringify({
+            type: 'ping',
+            timestamp: Date.now()
+          }));
+        } catch (e) {
+          console.error('[WebRTCService] Heartbeat ping send failed:', e);
+        }
+      }
+    }, 10000); // 10 seconds heartbeat
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
   }
 
   async createOffer(): Promise<string> {
@@ -94,6 +147,15 @@ export class WebRTCService {
     if (!this.pc) throw new Error('Peer connection not set up');
     const answer = JSON.parse(answerSdp);
     await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+  }
+
+  async initiateIceRestart(): Promise<string> {
+    if (!this.pc) throw new Error('Peer connection not set up');
+    console.log('[WebRTCService] Creating SDP offer for ICE Restart...');
+    const offer = await this.pc.createOffer({ iceRestart: true });
+    await this.pc.setLocalDescription(offer);
+    await this.waitForIceGathering();
+    return JSON.stringify(this.pc.localDescription);
   }
 
   private waitForIceGathering(): Promise<void> {
@@ -152,6 +214,7 @@ export class WebRTCService {
   }
 
   cleanUp() {
+    this.stopHeartbeat();
     if (this.channel) {
       try {
         this.channel.onopen = null;

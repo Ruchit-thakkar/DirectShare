@@ -43,6 +43,7 @@ interface AppState {
   // Settings
   chunkSizePreset: '128KB' | '256KB' | '512KB' | '1MB';
   notificationsEnabled: boolean;
+  iceServers: RTCIceServer[];
 
   // Actions
   setDisplayName: (name: string) => void;
@@ -65,8 +66,14 @@ interface AppState {
   setPeerName: (name: string | null) => void;
   setChunkSizePreset: (preset: '128KB' | '256KB' | '512KB' | '1MB') => void;
   setNotificationsEnabled: (enabled: boolean) => void;
+  setIceServers: (servers: RTCIceServer[]) => void;
   resetTransfer: () => void;
 }
+
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
 
 export const useStore = create<AppState>((set) => ({
   displayName: '',
@@ -89,6 +96,9 @@ export const useStore = create<AppState>((set) => ({
   // Settings defaults
   chunkSizePreset: '512KB', // Set default to 512KB for higher performance
   notificationsEnabled: false,
+  iceServers: typeof window !== 'undefined'
+    ? JSON.parse(localStorage.getItem('directshare_ice_servers') || 'null') || DEFAULT_ICE_SERVERS
+    : DEFAULT_ICE_SERVERS,
 
   setDisplayName: (name) => set({ displayName: name }),
   setConnectionState: (state) => set({ connectionState: state }),
@@ -105,7 +115,7 @@ export const useStore = create<AppState>((set) => ({
   updateActiveFileProgress: (id, progress, status) =>
     set((state) => ({
       activeFiles: state.activeFiles.map((f) =>
-        f.id === id ? { ...f, progress, ...(status ? { status } : {}) } : f
+          f.id === id ? { ...f, progress, ...(status ? { status } : {}) } : f
       ),
     })),
   updateTransferMetrics: (metrics) => set({
@@ -123,9 +133,13 @@ export const useStore = create<AppState>((set) => ({
   setPeerName: (peerName) => set({ peerName }),
   setChunkSizePreset: (chunkSizePreset) => set({ chunkSizePreset }),
   setNotificationsEnabled: (notificationsEnabled) => set({ notificationsEnabled }),
+  setIceServers: (iceServers) => {
+    localStorage.setItem('directshare_ice_servers', JSON.stringify(iceServers));
+    set({ iceServers });
+  },
 
   resetTransfer: () =>
-    set({
+    set((state) => ({
       connectionState: 'Waiting',
       selectedFiles: [],
       activeFiles: [],
@@ -141,5 +155,9 @@ export const useStore = create<AppState>((set) => ({
       roomId: null,
       isHost: false,
       peerName: null,
-    }),
+      // Retain settings on reset
+      chunkSizePreset: state.chunkSizePreset,
+      notificationsEnabled: state.notificationsEnabled,
+      iceServers: state.iceServers,
+    })),
 }));

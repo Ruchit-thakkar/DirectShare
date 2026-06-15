@@ -42,6 +42,9 @@ export class SenderService {
   
   private retransmitTimer: any = null;
   private isWaitingForBuffer = false;
+  private isReconnecting = false;
+  private iceRestartTimeout: any = null;
+  private failTimeout: any = null;
   
   // Speed calculator
   private speedTimer: any = null;
@@ -131,11 +134,33 @@ export class SenderService {
     this.webrtc.onConnectionStateChange = (state) => {
       console.log('[Sender] ICE state changed:', state);
       if (state === 'connected' || state === 'completed') {
+        if (this.isReconnecting) {
+          console.log('[Sender] ICE connection successfully recovered!');
+          this.isReconnecting = false;
+          if (this.iceRestartTimeout) {
+            clearTimeout(this.iceRestartTimeout);
+            this.iceRestartTimeout = null;
+          }
+          if (this.failTimeout) {
+            clearTimeout(this.failTimeout);
+            this.failTimeout = null;
+          }
+          useTransferStore.getState().updateTransferState({
+            errorMessage: null,
+          });
+        }
+        
+        this.isPaused = false;
         useTransferStore.getState().setTransferStatus('transferring');
         this.signalling.stopPolling();
         this.startSpeedCalculator();
+        this.startRetransmitScheduler();
+        
+        // Trigger sending more chunks in case the queue stalled
+        this.requestMoreChunks();
+        this.sendPendingPackets();
       } else if (state === 'disconnected' || state === 'failed') {
-        this.handleDisconnect();
+        this.handleIceDisconnect();
       }
     };
 
@@ -147,7 +172,7 @@ export class SenderService {
 
     this.webrtc.onChannelClose = () => {
       console.log('[Sender] DataChannel closed');
-      this.handleDisconnect();
+      this.handleIceDisconnect();
     };
 
     this.webrtc.onError = (err) => {
@@ -177,7 +202,13 @@ export class SenderService {
     };
 
     this.webrtc.onControlMessage = (msg) => {
-      if (msg.type === 'file-list-accepted') {
+      if (msg.type === 'rtt-update') {
+        this.rtt = 0.9 * this.rtt + 0.1 * msg.rtt;
+        this.rto = Math.max(200, Math.min(5000, this.rtt * 2));
+        useTransferStore.getState().updateTransferState({
+          smoothedRTT: this.rtt,
+        });
+      } else if (msg.type === 'file-list-accepted') {
         if (msg.accepted) {
           this.streamNextFile();
         } else {
@@ -205,6 +236,59 @@ export class SenderService {
         this.cleanUp();
       }
     };
+  }
+
+  private handleIceDisconnect() {
+    if (this.isReconnecting) return;
+    this.isReconnecting = true;
+    console.warn('[Sender] Connection unstable/disconnected. Starting auto-recovery...');
+
+    // Pause sending loops
+    this.isPaused = true;
+    this.stopRetransmitScheduler();
+    this.stopSpeedCalculator();
+
+    // Update status
+    useTransferStore.getState().updateTransferState({
+      errorMessage: 'Connection unstable. Reconnecting...',
+      status: 'connecting',
+    });
+
+    // Resume polling so signaling works
+    this.signalling.startPolling(
+      (msg) => this.handleSignalingMessage(msg),
+      (name) => {
+        useTransferStore.getState().updateTransferState({ peerName: name });
+      },
+      () => {
+        this.handleDisconnect();
+      }
+    );
+
+    // Set 5 seconds grace period for auto-recovery, then try ICE Restart
+    this.iceRestartTimeout = setTimeout(async () => {
+      if (this.isReconnecting) {
+        try {
+          console.warn('[Sender] Auto-recovery grace period expired. Initiating ICE Restart Offer...');
+          const offer = await this.webrtc.initiateIceRestart();
+          await this.signalling.sendMessage({ type: 'sdp', sdp: JSON.parse(offer) });
+        } catch (err) {
+          console.error('[Sender] ICE Restart offer failed:', err);
+        }
+      }
+    }, 5000);
+
+    // 30 seconds failure timeout
+    this.failTimeout = setTimeout(() => {
+      if (this.isReconnecting) {
+        console.error('[Sender] Connection failed to recover within 30 seconds.');
+        useTransferStore.getState().updateTransferState({
+          errorMessage: 'Connection lost. Reconnection timed out.',
+          status: 'error',
+        });
+        this.cleanUp();
+      }
+    }, 30000);
   }
 
   private handleDisconnect() {
@@ -754,6 +838,16 @@ export class SenderService {
     this.stopRetransmitScheduler();
     this.inFlight.clear();
     this.pendingPackets = [];
+    
+    if (this.iceRestartTimeout) {
+      clearTimeout(this.iceRestartTimeout);
+      this.iceRestartTimeout = null;
+    }
+    if (this.failTimeout) {
+      clearTimeout(this.failTimeout);
+      this.failTimeout = null;
+    }
+    this.isReconnecting = false;
     
     if (this.worker) {
       this.worker.terminate();

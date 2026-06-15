@@ -38,6 +38,8 @@ export class ReceiverService {
   private speedWindow: number[] = [];
   private fileMetadataMap = new Map<string, any>();
   private currentFileIndex = 0;
+  private isReconnecting = false;
+  private failTimeout: any = null;
 
   constructor(signalling: SignallingService, webrtc: WebRTCService) {
     this.signalling = signalling;
@@ -80,10 +82,23 @@ export class ReceiverService {
     this.webrtc.onConnectionStateChange = (state) => {
       console.log('[Receiver] ICE state changed:', state);
       if (state === 'connected' || state === 'completed') {
+        if (this.isReconnecting) {
+          console.log('[Receiver] ICE connection successfully recovered!');
+          this.isReconnecting = false;
+          if (this.failTimeout) {
+            clearTimeout(this.failTimeout);
+            this.failTimeout = null;
+          }
+          useReceiverStore.getState().updateReceiverState({
+            errorMessage: null,
+          });
+        }
+
+        useReceiverStore.getState().setReceiverStatus('receiving');
         this.signalling.stopPolling();
         this.startSpeedCalculator();
       } else if (state === 'disconnected' || state === 'failed') {
-        this.handleDisconnect();
+        this.handleIceDisconnect();
       }
     };
 
@@ -93,7 +108,7 @@ export class ReceiverService {
 
     this.webrtc.onChannelClose = () => {
       console.log('[Receiver] DataChannel closed');
-      this.handleDisconnect();
+      this.handleIceDisconnect();
     };
 
     this.webrtc.onError = (err) => {
@@ -118,7 +133,10 @@ export class ReceiverService {
     };
 
     this.webrtc.onControlMessage = async (msg) => {
-      if (msg.type === 'file-list') {
+      if (msg.type === 'rtt-update') {
+        // Pings/pongs update smoothed RTT on the sender's end, receiver just ignores/logs.
+        return;
+      } else if (msg.type === 'file-list') {
         this.activeFilesMeta = msg.files.map((f: any) => ({
           ...f,
           progress: 0,
@@ -155,6 +173,43 @@ export class ReceiverService {
         this.cleanUp();
       }
     };
+  }
+
+  private handleIceDisconnect() {
+    if (this.isReconnecting) return;
+    this.isReconnecting = true;
+    console.warn('[Receiver] Connection unstable/disconnected. Starting auto-recovery...');
+
+    this.stopSpeedCalculator();
+
+    // Update status to show reconnecting
+    useReceiverStore.getState().updateReceiverState({
+      errorMessage: 'Connection unstable. Reconnecting...',
+      status: 'connecting',
+    });
+
+    // Resume polling so signaling works
+    this.signalling.startPolling(
+      (msg) => this.handleSignalingMessage(msg),
+      (name) => {
+        useReceiverStore.getState().updateReceiverState({ peerName: name });
+      },
+      () => {
+        this.handleDisconnect();
+      }
+    );
+
+    // 30 seconds failure timeout
+    this.failTimeout = setTimeout(() => {
+      if (this.isReconnecting) {
+        console.error('[Receiver] Connection failed to recover within 30 seconds.');
+        useReceiverStore.getState().updateReceiverState({
+          errorMessage: 'Connection lost. Reconnection timed out.',
+          status: 'error',
+        });
+        this.cleanUp();
+      }
+    }, 30000);
   }
 
   private handleDisconnect() {
@@ -534,6 +589,12 @@ export class ReceiverService {
     this.stopSpeedCalculator();
     this.signalling.cleanUp();
     this.webrtc.cleanUp();
+
+    if (this.failTimeout) {
+      clearTimeout(this.failTimeout);
+      this.failTimeout = null;
+    }
+    this.isReconnecting = false;
 
     this.activeFilesMeta = [];
     this.receivedChunksSetMap.clear();
