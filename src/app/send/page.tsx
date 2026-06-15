@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
-import { useStore } from '@/store/useStore';
-import { transferManager } from '@/utils/webrtc';
+import { useStore, ConnectionState } from '@/store/useStore';
+import { useTransfer } from '@/hooks/useTransfer';
+import { useTransferStore } from '@/store/transferStore';
 import { formatBytes, formatSpeed, formatTime } from '@/utils/format';
 import { getFileTypeVisualsByFileName, getFileCategory } from '@/utils/fileTypes';
 import QRCode from 'qrcode';
@@ -25,7 +26,6 @@ import {
   Home as HomeIcon,
   Activity,
   XCircle,
-  Zap
 } from 'lucide-react';
 
 function ImageThumbnail({ file }: { file: File }) {
@@ -42,24 +42,30 @@ function ImageThumbnail({ file }: { file: File }) {
 
 export default function SendPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { displayName, chunkSizePreset } = useStore();
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [transferSpeedPeak, setTransferSpeedPeak] = useState(0);
+
   const {
-    displayName,
-    connectionState,
-    selectedFiles,
+    status,
+    metadata,
+    bytesSent,
+    chunksAcked,
+    currentSpeedBps,
+    etaSeconds,
+    errorMessage,
     activeFiles,
-    transferProgress,
-    transferSpeed,
-    transferSpeedCurrent,
-    transferSpeedPeak,
-    remainingTime,
-    errorMsg,
     roomId,
     peerName,
-    chunkSizePreset,
-    setConnectionState,
-    setSelectedFiles,
-    setErrorMsg,
-  } = useStore();
+    startSession,
+    setupManualConnection,
+    acceptManualAnswer,
+    pause,
+    resume,
+    cancel,
+    cleanUp,
+    resetTransfer,
+  } = useTransfer();
 
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
   const [showManual, setShowManual] = useState<boolean>(false);
@@ -69,12 +75,43 @@ export default function SendPage() {
   const [isGeneratingManual, setIsGeneratingManual] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
 
+  const errorMsg = errorMessage;
+  const remainingTime = etaSeconds;
+  const transferSpeed = currentSpeedBps;
+  const transferSpeedCurrent = currentSpeedBps;
+
+  const connectionState = (() => {
+    switch (status) {
+      case 'idle':
+        return 'Waiting';
+      case 'connecting':
+        return roomId ? 'Discovering' : 'Connecting';
+      case 'hashing':
+        return 'Connecting';
+      case 'transferring':
+        return 'Sending';
+      case 'paused':
+        return 'Paused';
+      case 'complete':
+        return 'Completed';
+      case 'error':
+      case 'aborted':
+        return 'Failed';
+      default:
+        return 'Waiting';
+    }
+  })() as ConnectionState;
+
+  const totalSize = activeFiles.reduce((acc, f) => acc + f.size, 0);
+  const totalUploaded = activeFiles.reduce((acc, f) => acc + (f.progress / 100) * f.size, 0);
+  const transferProgress = totalSize > 0 ? Math.round((totalUploaded / totalSize) * 100) : 0;
+
   // Initialize room for LAN signaling
   useEffect(() => {
-    if (selectedFiles.length > 0 && connectionState === 'Waiting') {
-      transferManager.initialize(true);
+    if (selectedFiles.length > 0 && status === 'idle') {
+      startSession(selectedFiles, displayName || 'Sender Device');
     }
-  }, [selectedFiles, connectionState]);
+  }, [selectedFiles, status, displayName, startSession]);
 
   // Generate QR Code for receiver room URL
   useEffect(() => {
@@ -117,12 +154,26 @@ export default function SendPage() {
     }
   }, [connectionState]);
 
+  // Track Peak Speed
+  useEffect(() => {
+    if (currentSpeedBps > transferSpeedPeak) {
+      setTransferSpeedPeak(currentSpeedBps);
+    }
+  }, [currentSpeedBps, transferSpeedPeak]);
+
+  useEffect(() => {
+    if (status === 'idle') {
+      setTransferSpeedPeak(0);
+    }
+  }, [status]);
+
   // Clean up WebRTC connection on unmount
   useEffect(() => {
     return () => {
-      transferManager.cleanUp();
-      useStore.getState().resetTransfer();
+      cleanUp();
+      resetTransfer();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -164,18 +215,16 @@ export default function SendPage() {
 
   const startTransfer = async () => {
     if (selectedFiles.length === 0) return;
-    await transferManager.sendSelectedFiles(selectedFiles);
+    await startSession(selectedFiles, displayName || 'Sender Device');
   };
 
   const handleGenerateManualOffer = async () => {
     setIsGeneratingManual(true);
-    setErrorMsg(null);
     try {
-      const sdp = await transferManager.setupManualConnection(true);
+      const sdp = await setupManualConnection();
       setManualOffer(sdp);
-      setConnectionState('Discovering');
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to generate SDP offer');
+      useTransferStore.getState().updateTransferState({ errorMessage: err.message || 'Failed to generate SDP offer' });
     } finally {
       setIsGeneratingManual(false);
     }
@@ -183,11 +232,10 @@ export default function SendPage() {
 
   const handleConnectManual = async () => {
     if (!manualAnswer) return;
-    setErrorMsg(null);
     try {
-      await transferManager.acceptManualAnswer(manualAnswer);
+      await acceptManualAnswer(manualAnswer);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to accept answer SDP');
+      useTransferStore.getState().updateTransferState({ errorMessage: err.message || 'Failed to accept answer SDP' });
     }
   };
 
@@ -198,19 +246,18 @@ export default function SendPage() {
   };
 
   const resetPage = () => {
-    transferManager.cleanUp();
-    useStore.getState().resetTransfer();
+    cleanUp();
+    resetTransfer();
+    setSelectedFiles([]);
   };
 
   const getChunkStats = () => {
-    const presetSizeMap = { '128KB': 128 * 1024, '256KB': 256 * 1024, '512KB': 512 * 1024, '1MB': 1024 * 1024 };
-    const chunkSize = presetSizeMap[chunkSizePreset] || 256 * 1024;
     const activeFile = activeFiles.find(f => f.status === 'transferring');
-    if (!activeFile) return { current: 0, total: 0 };
-    
-    const total = Math.ceil(activeFile.size / chunkSize);
-    const current = Math.min(total, Math.ceil((activeFile.progress / 100) * total));
-    return { current, total };
+    if (!activeFile || !metadata) return { current: 0, total: 0 };
+    return {
+      current: chunksAcked,
+      total: metadata.totalChunks,
+    };
   };
 
   const { current: currentChunk, total: totalChunks } = getChunkStats();
@@ -541,7 +588,7 @@ export default function SendPage() {
                   <div className="flex items-center gap-1.5">
                     {connectionState === 'Sending' ? (
                       <button
-                        onClick={() => transferManager.pause()}
+                        onClick={pause}
                         className="p-2 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 transition-colors cursor-pointer"
                         title="Pause"
                       >
@@ -549,7 +596,7 @@ export default function SendPage() {
                       </button>
                     ) : (
                       <button
-                        onClick={() => transferManager.resume()}
+                        onClick={resume}
                         className="p-2 rounded-lg bg-primary hover:bg-blue-600 text-white transition-colors cursor-pointer"
                         title="Resume"
                       >
@@ -557,7 +604,7 @@ export default function SendPage() {
                       </button>
                     )}
                     <button
-                      onClick={() => transferManager.cancel()}
+                      onClick={cancel}
                       className="p-2 rounded-lg bg-white/5 border border-white/10 hover:bg-red-500/10 text-slate-400 hover:text-red-400 hover:border-red-500/20 transition-colors cursor-pointer"
                       title="Cancel"
                     >
@@ -603,7 +650,7 @@ export default function SendPage() {
                       Time Left
                     </span>
                     <p className="text-xs sm:text-sm font-bold text-slate-200 mt-0.5">
-                      {formatTime(remainingTime).replace(' remaining', '')}
+                      {remainingTime !== null ? formatTime(remainingTime).replace(' remaining', '') : '--'}
                     </p>
                   </div>
                   <div className="p-3.5 rounded-xl bg-slate-900/40 border border-white/5">
@@ -653,19 +700,15 @@ export default function SendPage() {
 
                       <div className="flex items-center justify-between min-w-0 gap-2 relative z-10">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          {file.thumbnail ? (
-                            <img src={file.thumbnail} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10 shrink-0" />
-                          ) : (
-                            <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
-                              <Icon className="w-3.5 h-3.5" />
-                            </div>
-                          )}
+                          <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
+                            <Icon className="w-3.5 h-3.5" />
+                          </div>
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-slate-200 truncate">{file.name}</p>
                             <div className="flex items-center gap-1.5 mt-0.5">
                               <span className="text-[10px] text-slate-500 font-mono">{formatBytes(file.size)}</span>
                               <span className="text-[10px] text-slate-600">•</span>
-                              <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider">{file.category || category}</span>
+                              <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider">{category}</span>
                             </div>
                           </div>
                         </div>

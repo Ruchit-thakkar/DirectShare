@@ -19,8 +19,12 @@ export default function PwaHandler() {
 
   useEffect(() => {
     // 1. Service Worker Registration
+    let isMounted = true;
+    let registerSW: (() => void) | undefined = undefined;
+
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
+      registerSW = () => {
+        if (!isMounted) return;
         navigator.serviceWorker
           .register('/sw.js')
           .then((registration) => {
@@ -29,7 +33,13 @@ export default function PwaHandler() {
           .catch((registrationError) => {
             console.error('DirectShare SW registration failed: ', registrationError);
           });
-      });
+      };
+
+      if (document.readyState === 'complete') {
+        registerSW();
+      } else {
+        window.addEventListener('load', registerSW);
+      }
     }
 
     // 2. Offline Status Handler
@@ -60,6 +70,10 @@ export default function PwaHandler() {
 
     // Clean up listeners
     return () => {
+      isMounted = false;
+      if (registerSW) {
+        window.removeEventListener('load', registerSW);
+      }
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);

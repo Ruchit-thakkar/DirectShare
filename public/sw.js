@@ -48,11 +48,24 @@ self.addEventListener('activate', (event) => {
 });
 
 // Helper functions to read chunks from IndexedDB
-function getChunkFromDB(fileId, chunkIndex) {
+let swDb = null;
+
+function getSwDb() {
+  if (swDb) return Promise.resolve(swDb);
   return new Promise((resolve, reject) => {
+    // Open without version number to avoid VersionErrors or upgrade blocks
     const request = indexedDB.open('directshare_db');
     request.onsuccess = () => {
-      const db = request.result;
+      swDb = request.result;
+      resolve(swDb);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function getChunkFromDB(fileId, chunkIndex) {
+  return getSwDb().then((db) => {
+    return new Promise((resolve, reject) => {
       try {
         const transaction = db.transaction('chunks', 'readonly');
         const store = transaction.objectStore('chunks');
@@ -64,16 +77,13 @@ function getChunkFromDB(fileId, chunkIndex) {
       } catch (err) {
         reject(err);
       }
-    };
-    request.onerror = () => reject(request.error);
+    });
   });
 }
 
 function clearChunksFromDB(fileId, totalChunks) {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('directshare_db');
-    request.onsuccess = () => {
-      const db = request.result;
+  return getSwDb().then((db) => {
+    return new Promise((resolve, reject) => {
       try {
         const transaction = db.transaction('chunks', 'readwrite');
         const store = transaction.objectStore('chunks');
@@ -85,15 +95,15 @@ function clearChunksFromDB(fileId, totalChunks) {
       } catch (err) {
         reject(err);
       }
-    };
-    request.onerror = () => reject(request.error);
+    });
   });
 }
 
 function handleStreamDownload(url) {
   const fileId = url.searchParams.get('fileId');
-  const fileName = decodeURIComponent(url.searchParams.get('name') || 'file');
-  const fileType = decodeURIComponent(url.searchParams.get('type') || 'application/octet-stream');
+  // Avoid decodeURIComponent as url.searchParams.get automatically decodes values
+  const fileName = url.searchParams.get('name') || 'file';
+  const fileType = url.searchParams.get('type') || 'application/octet-stream';
   const fileSize = parseInt(url.searchParams.get('size') || '0', 10);
   const totalChunks = parseInt(url.searchParams.get('totalChunks') || '0', 10);
 

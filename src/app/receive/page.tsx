@@ -3,8 +3,9 @@
 import { useEffect, useState, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { useStore } from '@/store/useStore';
-import { transferManager } from '@/utils/webrtc';
+import { useStore, ConnectionState } from '@/store/useStore';
+import { useReceive } from '@/hooks/useReceive';
+import { useReceiverStore } from '@/store/receiverStore';
 import { formatBytes, formatSpeed, formatTime } from '@/utils/format';
 import { getFileTypeVisualsByFileName } from '@/utils/fileTypes';
 import { Html5Qrcode } from 'html5-qrcode';
@@ -24,26 +25,31 @@ import {
   ArrowRight,
   Activity,
   Check,
-  Zap
 } from 'lucide-react';
 
 function ReceivePageContent() {
   const searchParams = useSearchParams();
+  const { displayName } = useStore();
+  const [transferSpeedPeak, setTransferSpeedPeak] = useState(0);
+
   const {
-    displayName,
-    connectionState,
+    status,
+    metadata,
+    nextExpected,
+    bytesReceived,
+    chunksReceived,
+    currentSpeedBps,
+    etaSeconds,
+    missingChunks,
+    errorMessage,
     activeFiles,
-    transferProgress,
-    transferSpeed,
-    transferSpeedCurrent,
-    transferSpeedPeak,
-    remainingTime,
-    errorMsg,
-    roomId,
     peerName,
-    setConnectionState,
-    setErrorMsg,
-  } = useStore();
+    startSession,
+    acceptManualOffer,
+    acceptTransfer,
+    cleanUp,
+    resetReceiver,
+  } = useReceive();
 
   const [inputRoomId, setInputRoomId] = useState<string>('');
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
@@ -58,6 +64,39 @@ function ReceivePageContent() {
   const [isGeneratingAnswer, setIsGeneratingAnswer] = useState<boolean>(false);
 
   const qrScannerRef = useRef<Html5Qrcode | null>(null);
+
+  const errorMsg = errorMessage;
+  const remainingTime = etaSeconds;
+  const transferSpeed = currentSpeedBps;
+  const transferSpeedCurrent = currentSpeedBps;
+
+  const connectionState = (() => {
+    switch (status) {
+      case 'idle':
+        return 'Waiting';
+      case 'connecting':
+        return 'Connecting';
+      case 'waiting_metadata':
+        return 'Receiving';
+      case 'receiving':
+        return 'Receiving';
+      case 'paused':
+        return 'Paused';
+      case 'verifying':
+        return 'Connected';
+      case 'complete':
+        return 'Completed';
+      case 'corrupt':
+      case 'error':
+        return 'Failed';
+      default:
+        return 'Waiting';
+    }
+  })() as ConnectionState;
+
+  const totalSize = activeFiles.reduce((acc, f) => acc + f.size, 0);
+  const totalDownloaded = activeFiles.reduce((acc, f) => acc + (f.progress / 100) * f.size, 0);
+  const transferProgress = totalSize > 0 ? Math.round((totalDownloaded / totalSize) * 100) : 0;
 
   // Check URL query parameters for ?room=XXXXXX on load
   useEffect(() => {
@@ -98,30 +137,44 @@ function ReceivePageContent() {
     }
   }, [connectionState]);
 
+  // Track Peak Speed
+  useEffect(() => {
+    if (currentSpeedBps > transferSpeedPeak) {
+      setTransferSpeedPeak(currentSpeedBps);
+    }
+  }, [currentSpeedBps, transferSpeedPeak]);
+
+  useEffect(() => {
+    if (status === 'idle') {
+      setTransferSpeedPeak(0);
+    }
+  }, [status]);
+
   // Clean up WebRTC connection on unmount
   useEffect(() => {
     return () => {
       stopScanner();
-      transferManager.cleanUp();
-      useStore.getState().resetTransfer();
+      cleanUp();
+      resetReceiver();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleConnect = async (targetRoomId: string) => {
     const code = targetRoomId || inputRoomId;
     if (code.length !== 6) {
-      setErrorMsg('Please enter a valid 6-digit connection code');
+      useReceiverStore.getState().updateReceiverState({ errorMessage: 'Please enter a valid 6-digit connection code' });
       return;
     }
 
     setIsConnecting(true);
-    setErrorMsg(null);
+    useReceiverStore.getState().updateReceiverState({ errorMessage: null });
     stopScanner();
 
     try {
-      await transferManager.initialize(false, code);
+      await startSession(code, displayName || 'Receiver Device');
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to connect');
+      useReceiverStore.getState().updateReceiverState({ errorMessage: err.message || 'Failed to connect' });
     } finally {
       setIsConnecting(false);
     }
@@ -180,22 +233,21 @@ function ReceivePageContent() {
   };
 
   const handleAcceptTransfer = () => {
-    transferManager.acceptTransfer(true);
+    acceptTransfer(true);
   };
 
   const handleRejectTransfer = () => {
-    transferManager.acceptTransfer(false);
+    acceptTransfer(false);
   };
 
   const handleGenerateManualAnswer = async () => {
     if (!manualOffer) return;
     setIsGeneratingAnswer(true);
-    setErrorMsg(null);
     try {
-      const answer = await transferManager.acceptManualOffer(manualOffer);
+      const answer = await acceptManualOffer(manualOffer);
       setManualAnswer(answer);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to accept offer SDP');
+      useReceiverStore.getState().updateReceiverState({ errorMessage: err.message || 'Failed to accept offer SDP' });
     } finally {
       setIsGeneratingAnswer(false);
     }
@@ -208,8 +260,9 @@ function ReceivePageContent() {
   };
 
   const resetPage = () => {
-    transferManager.cleanUp();
-    useStore.getState().resetTransfer();
+    cleanUp();
+    resetReceiver();
+    setInputRoomId('');
   };
 
   return (
@@ -343,7 +396,7 @@ function ReceivePageContent() {
                     disabled={!manualOffer || isGeneratingAnswer}
                     className="px-3 py-1.5 bg-slate-800 text-slate-200 text-xs font-bold rounded-lg border border-white/10 transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                   >
-                    {isGeneratingAnswer && <Loader2 className="w-3 h-3 animate-spin" />}
+                    {isGeneratingAnswer && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                     Generate Answer
                   </button>
                 </div>
@@ -417,7 +470,7 @@ function ReceivePageContent() {
       )}
 
       {/* STEP 3: Transfer approval modal dialog */}
-      {connectionState === 'Receiving' && activeFiles.length > 0 && (
+      {connectionState === 'Receiving' && activeFiles.length > 0 && activeFiles.some(f => f.status === 'pending') && (
         <div className="p-6 rounded-2xl bg-[#1E293B] border border-white/10 max-w-xl mx-auto space-y-5 shadow-xl animate-fade-in">
           <div className="flex items-center gap-3 border-b border-white/10 pb-3">
             <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
@@ -445,16 +498,12 @@ function ReceivePageContent() {
                     className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/40 border border-white/5 hover:bg-slate-900/60 transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      {file.thumbnail ? (
-                        <img src={file.thumbnail} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10 shrink-0" />
-                      ) : (
-                        <div className={`p-2 rounded-lg border ${colorClass} shrink-0`}>
-                          <Icon className="w-3.5 h-3.5" />
-                        </div>
-                      )}
+                      <div className={`p-2 rounded-lg border ${colorClass} shrink-0`}>
+                        <Icon className="w-3.5 h-3.5" />
+                      </div>
                       <div className="min-w-0">
                         <span className="text-xs sm:text-sm font-semibold text-slate-200 truncate block">{file.name}</span>
-                        <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider block mt-0.5">{file.category || category}</span>
+                        <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider block mt-0.5">{category}</span>
                       </div>
                     </div>
                     <span className="text-xs text-slate-400 shrink-0 font-mono">{formatBytes(file.size)}</span>
@@ -511,7 +560,7 @@ function ReceivePageContent() {
                 </div>
 
                 <button
-                  onClick={() => transferManager.cancel()}
+                  onClick={cleanUp}
                   className="p-2 rounded-lg bg-white/5 border border-white/10 hover:bg-red-500/10 text-slate-400 hover:text-red-400 hover:border-red-500/20 transition-colors cursor-pointer"
                   title="Cancel"
                 >
@@ -556,7 +605,7 @@ function ReceivePageContent() {
                     Remaining
                   </span>
                   <p className="text-xs sm:text-sm font-bold text-slate-200 mt-0.5">
-                    {formatTime(remainingTime).replace(' remaining', '')}
+                    {remainingTime !== null ? formatTime(remainingTime).replace(' remaining', '') : '--'}
                   </p>
                 </div>
                 <div className="p-3.5 rounded-xl bg-slate-900/40 border border-white/5">
@@ -606,19 +655,15 @@ function ReceivePageContent() {
 
                     <div className="flex items-center justify-between min-w-0 gap-2 relative z-10">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        {file.thumbnail ? (
-                          <img src={file.thumbnail} alt={file.name} className="w-8 h-8 rounded-lg object-cover border border-white/10 shrink-0" />
-                        ) : (
-                          <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
-                            <Icon className="w-3.5 h-3.5" />
-                          </div>
-                        )}
+                        <div className={`p-1.5 rounded-lg border ${colorClass} shrink-0`}>
+                          <Icon className="w-3.5 h-3.5" />
+                        </div>
                         <div className="min-w-0">
                           <p className="text-xs font-semibold text-slate-200 truncate">{file.name}</p>
                           <div className="flex items-center gap-1.5 mt-0.5">
                             <span className="text-[10px] text-slate-500 font-mono">{formatBytes(file.size)}</span>
                             <span className="text-[10px] text-slate-600">•</span>
-                            <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider">{file.category || category}</span>
+                            <span className="text-[9px] text-primary/70 font-semibold uppercase tracking-wider">{category}</span>
                           </div>
                         </div>
                       </div>
