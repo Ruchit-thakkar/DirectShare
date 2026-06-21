@@ -14,7 +14,8 @@ import {
   Send, 
   Download, 
   Info, 
-  Mail 
+  Mail,
+  Smartphone
 } from 'lucide-react';
 
 export default function Navbar() {
@@ -48,6 +49,7 @@ export default function Navbar() {
     { name: 'Home', href: '/', icon: Home },
     { name: 'Send', href: '/send', icon: Send },
     { name: 'Receive', href: '/receive', icon: Download },
+    { name: 'Download', href: '/download', icon: Smartphone },
     { name: 'About', href: '/about', icon: Info },
     { name: 'Contact', href: '/contact', icon: Mail },
   ];

@@ -12,6 +12,7 @@ export default function Footer() {
     { name: 'Home', href: '/' },
     { name: 'Send', href: '/send' },
     { name: 'Receive', href: '/receive' },
+    { name: 'Download', href: '/download' },
     { name: 'About', href: '/about' },
     { name: 'Contact', href: '/contact' },
   ];
