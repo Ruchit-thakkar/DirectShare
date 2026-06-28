@@ -3,27 +3,6 @@ let currentFileId = null;
 let currentSessionId = null;
 let currentChunkSize = 0;
 
-const CRC32_TABLE = (() => {
-  const table = new Int32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) {
-      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    table[i] = c;
-  }
-  return table;
-})();
-
-function crc32(buffer) {
-  const uint8 = new Uint8Array(buffer);
-  let crc = -1;
-  for (let i = 0; i < uint8.length; i++) {
-    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ uint8[i]) & 0xFF];
-  }
-  return (crc ^ -1) >>> 0;
-}
-
 self.onmessage = async function (e) {
   const { type, payload } = e.data;
 
@@ -63,8 +42,11 @@ self.onmessage = async function (e) {
       const reader = new FileReaderSync();
       const arrayBuffer = reader.readAsArrayBuffer(slice);
 
-      // Compute CRC32 checksum
-      const checksumVal = crc32(arrayBuffer);
+      // Compute cryptographic SHA-256 hash
+      const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+      const checksumVal = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
 
       // Post chunk back to main thread and transfer ownership
       self.postMessage(

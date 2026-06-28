@@ -30,7 +30,7 @@ export interface ChunkPacket extends CommonPacketHeader {
   packetType: PacketType.CHUNK;
   sequenceNumber: number;
   totalChunks: number;
-  chunkChecksum: number;
+  chunkChecksum: string;
   payload: ArrayBuffer;
 }
 

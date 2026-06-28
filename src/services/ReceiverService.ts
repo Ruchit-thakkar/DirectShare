@@ -4,18 +4,21 @@ import { useReceiverStore } from '../store/receiverStore';
 import { PacketType } from '../types/packets';
 import { deserializeMetadata, deserializeChunk, serializeAck, serializeControl } from '../lib/serializer';
 import { getFileCategory } from '../utils/fileTypes';
-import { crc32 } from '../lib/crc32';
 import {
   saveChunk,
   getChunk,
   clearChunks,
   addHistory,
-  saveTransferMetadata,
-  getTransferMetadata,
   deleteTransferMetadata,
-  markChunkCompleted,
-  TransferMetadata
+  markChunkCompleted
 } from '../utils/db';
+
+async function computeSha256(buffer: ArrayBuffer): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 export class ReceiverService {
   private signalling: SignallingService;
@@ -134,7 +137,6 @@ export class ReceiverService {
 
     this.webrtc.onControlMessage = async (msg) => {
       if (msg.type === 'rtt-update') {
-        // Pings/pongs update smoothed RTT on the sender's end, receiver just ignores/logs.
         return;
       } else if (msg.type === 'file-list') {
         this.activeFilesMeta = msg.files.map((f: any) => ({
@@ -157,7 +159,6 @@ export class ReceiverService {
           activeFiles: this.activeFilesMeta,
         });
 
-        // Trigger invitation display in UI
         useReceiverStore.getState().setReceiverMetadata(this.activeFilesMeta[0] || null);
       } else if (msg.type === 'file-complete-verify') {
         await this.handleFileCompleteVerify(msg.fileId);
@@ -182,13 +183,11 @@ export class ReceiverService {
 
     this.stopSpeedCalculator();
 
-    // Update status to show reconnecting
     useReceiverStore.getState().updateReceiverState({
       errorMessage: 'Connection unstable. Reconnecting...',
       status: 'connecting',
     });
 
-    // Resume polling so signaling works
     this.signalling.startPolling(
       (msg) => this.handleSignalingMessage(msg),
       (name) => {
@@ -198,18 +197,6 @@ export class ReceiverService {
         this.handleDisconnect();
       }
     );
-
-    // 30 seconds failure timeout
-    this.failTimeout = setTimeout(() => {
-      if (this.isReconnecting) {
-        console.error('[Receiver] Connection failed to recover within 30 seconds.');
-        useReceiverStore.getState().updateReceiverState({
-          errorMessage: 'Connection lost. Reconnection timed out.',
-          status: 'error',
-        });
-        this.cleanUp();
-      }
-    }, 30000);
   }
 
   private handleDisconnect() {
@@ -225,10 +212,11 @@ export class ReceiverService {
   private async handleSignalingMessage(msg: any) {
     if (msg.type === 'sdp' && msg.sdp.type === 'offer') {
       try {
+        console.log('[Receiver] Received SDP offer for ICE restart/reconnect.');
         const answer = await this.webrtc.acceptOffer(JSON.stringify(msg.sdp));
         await this.signalling.sendMessage({ type: 'sdp', sdp: JSON.parse(answer) });
       } catch (err: any) {
-        console.error('[Receiver] Accept offer failed:', err);
+        console.error('[Receiver] Handle SDP offer failed:', err);
       }
     }
   }
@@ -250,97 +238,47 @@ export class ReceiverService {
     }
   }
 
-  private async handleFileMetadata(metadata: any) {
-    const { fileId, fileName, fileSize, mimeType, totalChunks, chunkSize } = metadata;
+  private async handleFileMetadata(meta: any) {
+    console.log('[Receiver] Received file metadata:', meta);
     
-    this.fileTotalChunks.set(fileId, totalChunks);
-    this.fileChunkSizes.set(fileId, chunkSize);
-    this.fileMetadataMap.set(fileId, metadata);
+    this.fileMetadataMap.set(meta.fileId, meta);
+    this.fileChunkSizes.set(meta.fileId, meta.chunkSize);
+    this.fileTotalChunks.set(meta.fileId, meta.totalChunks);
 
-    const existingMeta = await getTransferMetadata(fileId);
-    let completedChunks: number[] = [];
-
-    if (existingMeta && existingMeta.size === fileSize) {
-      completedChunks = existingMeta.completedChunks;
-      console.log(`[Receiver] Resuming transfer. Completed: ${completedChunks.length}/${totalChunks}`);
-    } else {
-      const newMeta: TransferMetadata = {
-        fileId,
-        name: fileName,
-        size: fileSize,
-        type: mimeType,
-        totalChunks,
-        completedChunks: [],
-        sessionKey: this.signalling.getRoomId(),
-        timestamp: Date.now(),
-      };
-      await saveTransferMetadata(newMeta);
-    }
-
-    this.receivedChunksSetMap.set(fileId, new Set<number>(completedChunks));
-
-    const meta = {
-      fileId,
-      fileName,
-      fileSize,
-      mimeType,
-      totalChunks,
-      chunkSize,
-      checksum: metadata.checksum,
-      createdAt: metadata.createdAt,
-    };
-
-    const fileIndex = this.activeFilesMeta.findIndex(f => f.id === fileId);
-    if (fileIndex !== -1) {
-      this.currentFileIndex = fileIndex;
-    }
-
-    const currentActiveFiles = useReceiverStore.getState().activeFiles.map(f => {
-      if (f.id === fileId) {
-        return {
-          ...f,
-          progress: totalChunks > 0 ? Math.round((completedChunks.length / totalChunks) * 100) : 0,
-          status: 'transferring' as const,
-        };
-      }
-      return f;
-    });
+    const receivedSet = new Set<number>();
+    this.receivedChunksSetMap.set(meta.fileId, receivedSet);
 
     useReceiverStore.getState().updateReceiverState({
       status: 'receiving',
       metadata: meta,
-      nextExpected: this.findNextExpected(fileId, completedChunks, totalChunks),
-      chunksReceived: completedChunks.length,
-      bytesReceived: completedChunks.length * chunkSize,
-      activeFiles: currentActiveFiles,
+      chunksReceived: 0,
+      bytesReceived: 0,
+      nextExpected: 0,
     });
 
-    // Send ACK back to sender to begin worker execution
     this.webrtc.send(JSON.stringify({
       type: 'file-start-ack',
-      fileId,
-      completedChunks,
+      fileId: meta.fileId,
+      completedChunks: [],
     }));
-  }
 
-  private findNextExpected(fileId: string, completed: number[], total: number): number {
-    const set = new Set(completed);
-    for (let i = 0; i < total; i++) {
-      if (!set.has(i)) return i;
+    if (this.currentFileIndex === 0) {
+      this.startTime = Date.now();
     }
-    return total;
   }
 
   private async handleChunk(chunk: any) {
     const { fileId, sequenceNumber, totalChunks, chunkChecksum, payload } = chunk;
 
-    // CRC validation
-    const computedCrc = crc32(payload);
-    if (computedCrc !== chunkChecksum) {
-      console.error(`[Receiver] CRC-32 checksum mismatch on chunk ${sequenceNumber}! Got: ${computedCrc}, Expected: ${chunkChecksum}`);
-      // Send NACK to trigger immediate sender retransmission
-      const nackBuffer = serializeAck(PacketType.NACK, fileId, sequenceNumber);
-      this.webrtc.send(nackBuffer);
+    // Cryptographic SHA-256 integrity validation
+    const computedHash = await computeSha256(payload);
+    if (computedHash !== chunkChecksum) {
+      console.error(`[Receiver] SHA-256 hash mismatch on chunk ${sequenceNumber}! Got: ${computedHash}, Expected: ${chunkChecksum}`);
+      useReceiverStore.getState().updateReceiverState({
+        errorMessage: `Integrity check failed: Chunk ${sequenceNumber} was corrupted.`,
+        status: 'error',
+      });
+      this.cleanUp();
       return;
     }
 
@@ -348,14 +286,6 @@ export class ReceiverService {
     if (!receivedSet) {
       receivedSet = new Set<number>();
       this.receivedChunksSetMap.set(fileId, receivedSet);
-    }
-
-    // Duplicate detection
-    if (receivedSet.has(sequenceNumber)) {
-      // Re-send ACK to slide window in case it was lost
-      const ackBuffer = serializeAck(PacketType.ACK, fileId, sequenceNumber);
-      this.webrtc.send(ackBuffer);
-      return;
     }
 
     receivedSet.add(sequenceNumber);
@@ -385,14 +315,14 @@ export class ReceiverService {
 
     await writePromise;
 
-    // Send ACK back
+    // Send ACK back to update progress on sender side
     const ackBuffer = serializeAck(PacketType.ACK, fileId, sequenceNumber);
     this.webrtc.send(ackBuffer);
 
     // Update state progress
     const activeMeta = useReceiverStore.getState().metadata;
     if (activeMeta && activeMeta.fileId === fileId) {
-      const nextExpected = this.findNextExpected(fileId, Array.from(receivedSet), totalChunks);
+      const nextExpected = sequenceNumber + 1;
       
       let receivedBytesSoFar = 0;
       this.receivedChunksSetMap.forEach((set, id) => {
@@ -432,7 +362,6 @@ export class ReceiverService {
     if (metadata && receivedSet && receivedSet.size === totalChunks) {
       useReceiverStore.getState().setReceiverStatus('verifying');
       
-      // Await any pending database writes for this file
       const activeWrites = this.fileWritePromises.get(fileId) || [];
       if (activeWrites.length > 0) {
         console.log(`[Receiver] Awaiting ${activeWrites.length} pending writes to IndexedDB for file verification...`);
@@ -453,11 +382,10 @@ export class ReceiverService {
         timestamp: Date.now(),
       });
 
-      // Confirm verification
+      // Confirm verification back to sender
       const verifySuccess = serializeControl(PacketType.FILE_COMPLETE, fileId);
       this.webrtc.send(verifySuccess);
 
-      // Update activeFiles status in store
       const currentActiveFiles = useReceiverStore.getState().activeFiles.map(f => {
         if (f.id === fileId) {
           return {
@@ -469,7 +397,6 @@ export class ReceiverService {
         return f;
       });
 
-      // Check if all files completed
       this.currentFileIndex++;
       if (this.currentFileIndex >= this.activeFilesMeta.length) {
         useReceiverStore.getState().updateReceiverState({
@@ -515,7 +442,6 @@ export class ReceiverService {
         await clearChunks(fileId, totalChunks);
         return;
       } catch (err: any) {
-        // If the user cancelled the file picker, stop here without falling back
         if (err.name === 'AbortError') {
           console.log('[Receiver] Save file picker cancelled by user.');
           return;
@@ -566,6 +492,22 @@ export class ReceiverService {
     }
 
     // 3. Fallback: Buffer in memory
+    const SAFE_MEMORY_LIMIT = 50 * 1024 * 1024; // 50MB
+    if (fileSize > SAFE_MEMORY_LIMIT) {
+      const proceed = confirm(
+        `Warning: Your browser does not support streaming downloads for large files. ` +
+        `This fallback download requires loading the entire file (${Math.round(fileSize / (1024 * 1024))}MB) into your browser's memory, ` +
+        `which may crash the tab on some devices. Do you want to proceed anyway?`
+      );
+      if (!proceed) {
+        useReceiverStore.getState().updateReceiverState({
+          errorMessage: 'Download cancelled due to size limits in this browser. Please use Chrome/Edge.',
+          status: 'error',
+        });
+        return;
+      }
+    }
+
     const chunkArray: ArrayBuffer[] = [];
     for (let i = 0; i < totalChunks; i++) {
       const chunk = await getChunk(fileId, i);

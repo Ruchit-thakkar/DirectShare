@@ -41,24 +41,35 @@ export function readCommonHeader(view: DataView): CommonPacketHeader {
   return { packetType, version, flags, fileId };
 }
 
-// ── CHUNK Packet ──
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(32);
+  for (let c = 0; c < 32; c++) {
+    bytes[c] = parseInt(hex.substring(c * 2, c * 2 + 2), 16) || 0;
+  }
+  return bytes;
+}
+
+// ── CHUNK Packet with SHA-256 ──
 export function serializeChunk(
   fileId: string,
   sequenceNumber: number,
   totalChunks: number,
-  chunkChecksum: number,
+  chunkChecksum: string, // hex string (64 chars)
   payload: ArrayBuffer,
   flags = 0
 ): ArrayBuffer {
-  // Total size: 20B (common) + 12B (chunk) + payload size
-  const headerSize = 32;
+  // Total size: 20B (common) + 8B (indices) + 32B (SHA-256) = 60 bytes header
+  const headerSize = 60;
   const buffer = new ArrayBuffer(headerSize + payload.byteLength);
   const view = new DataView(buffer);
 
   writeCommonHeader(view, PacketType.CHUNK, fileId, flags);
   view.setUint32(20, sequenceNumber, false);
   view.setUint32(24, totalChunks, false);
-  view.setUint32(28, chunkChecksum, false);
+
+  const hashBytes = hexToBytes(chunkChecksum);
+  const hashArray = new Uint8Array(buffer, 28, 32);
+  hashArray.set(hashBytes);
 
   const payloadArray = new Uint8Array(buffer, headerSize);
   payloadArray.set(new Uint8Array(payload));
@@ -72,16 +83,21 @@ export function deserializeChunk(buffer: ArrayBuffer): ChunkPacket {
 
   const sequenceNumber = view.getUint32(20, false);
   const totalChunks = view.getUint32(24, false);
-  const chunkChecksum = view.getUint32(28, false);
 
-  const payload = buffer.slice(32);
+  // Extract 32-byte SHA-256 and convert to hex string
+  const hashBytes = new Uint8Array(buffer, 28, 32);
+  const chunkChecksum = Array.from(hashBytes)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  const payload = buffer.slice(60);
 
   return {
     ...header,
     packetType: PacketType.CHUNK,
     sequenceNumber,
     totalChunks,
-    chunkChecksum,
+    chunkChecksum, // hex string
     payload,
   };
 }

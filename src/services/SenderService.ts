@@ -2,9 +2,9 @@ import { SignallingService } from './SignallingService';
 import { WebRTCService } from './WebRTCService';
 import { useTransferStore } from '../store/transferStore';
 import { useStore } from '../store/useStore';
-import { getSafeChunkSize, CHUNK_SIZE_MAP } from '../lib/chunker';
+import { getSafeChunkSize } from '../lib/chunker';
 import { PacketType } from '../types/packets';
-import { serializeMetadata, deserializeAck, deserializeSnack, serializeChunk, serializeControl } from '../lib/serializer';
+import { serializeMetadata, deserializeAck, serializeChunk } from '../lib/serializer';
 import { addHistory } from '../utils/db';
 
 export class SenderService {
@@ -16,36 +16,27 @@ export class SenderService {
   private isPaused = false;
   private offerSent = false;
   
-  // Reliable transfer properties
   private worker: Worker | null = null;
   private currentFileId = '';
   private totalChunks = 0;
   private nextSeqNum = 0;
-  private sendBase = 0;
-  private windowSize = 16;
-  private readonly maxWindowSize = 64;
-  private readonly minWindowSize = 4;
-  private rtt = 100; // ms
-  private rto = 500; // ms
   private ackedChunks = new Set<number>();
-  private inFlight = new Map<number, {
-    data: ArrayBuffer;
-    checksum: number;
-    timestamp: number;
-    retries: number;
-  }>();
   private pendingPackets: Array<{
     chunkIndex: number;
     data: ArrayBuffer;
-    checksum: number;
+    checksum: string;
   }> = [];
   
-  private retransmitTimer: any = null;
   private isWaitingForBuffer = false;
   private isReconnecting = false;
   private iceRestartTimeout: any = null;
   private failTimeout: any = null;
   
+  // ICE reconnect attempts
+  private iceRetryCount = 0;
+  private readonly maxIceRetries = 3;
+  private readonly iceRetryInterval = 5000;
+
   // Speed calculator
   private speedTimer: any = null;
   private totalBytesTransferred = 0;
@@ -55,6 +46,7 @@ export class SenderService {
   private startTime: number | null = null;
   private speedWindow: number[] = [];
   private sentBytesMap = new Map<string, number>();
+  private rtt = 100; // ms
 
   constructor(signalling: SignallingService, webrtc: WebRTCService) {
     this.signalling = signalling;
@@ -137,6 +129,7 @@ export class SenderService {
         if (this.isReconnecting) {
           console.log('[Sender] ICE connection successfully recovered!');
           this.isReconnecting = false;
+          this.iceRetryCount = 0; // Reset reconnect attempts
           if (this.iceRestartTimeout) {
             clearTimeout(this.iceRestartTimeout);
             this.iceRestartTimeout = null;
@@ -154,7 +147,6 @@ export class SenderService {
         useTransferStore.getState().setTransferStatus('transferring');
         this.signalling.stopPolling();
         this.startSpeedCalculator();
-        this.startRetransmitScheduler();
         
         // Trigger sending more chunks in case the queue stalled
         this.requestMoreChunks();
@@ -166,7 +158,6 @@ export class SenderService {
 
     this.webrtc.onChannelOpen = () => {
       console.log('[Sender] WebRTC DataChannel opened!');
-      // Reloop client display info
       this.sendFileList();
     };
 
@@ -190,12 +181,6 @@ export class SenderService {
       if (packetType === PacketType.ACK) {
         const ack = deserializeAck(data);
         this.handleAck(ack.sequenceNumber);
-      } else if (packetType === PacketType.NACK) {
-        const nack = deserializeAck(data);
-        this.handleNack(nack.sequenceNumber);
-      } else if (packetType === PacketType.SNACK) {
-        const snack = deserializeSnack(data);
-        this.handleSnack(snack.missingSequences);
       } else if (packetType === PacketType.FILE_COMPLETE) {
         this.handleFileCompleteAck();
       }
@@ -204,7 +189,6 @@ export class SenderService {
     this.webrtc.onControlMessage = (msg) => {
       if (msg.type === 'rtt-update') {
         this.rtt = 0.9 * this.rtt + 0.1 * msg.rtt;
-        this.rto = Math.max(200, Math.min(5000, this.rtt * 2));
         useTransferStore.getState().updateTransferState({
           smoothedRTT: this.rtt,
         });
@@ -221,8 +205,8 @@ export class SenderService {
       } else if (msg.type === 'file-start-ack') {
         this.handleFileStartAck(msg.completedChunks);
       } else if (msg.type === 'request-missing-verification') {
-        console.warn('[Sender] Receiver requested missing verification chunks. Retransmitting window from sendBase:', this.sendBase);
-        this.nextSeqNum = this.sendBase;
+        console.warn('[Sender] Receiver requested missing verification chunks. Retransmitting from 0:', this.nextSeqNum);
+        this.nextSeqNum = 0;
         this.requestMoreChunks();
       } else if (msg.type === 'file-pause') {
         this.pauseLocally();
@@ -243,14 +227,12 @@ export class SenderService {
     this.isReconnecting = true;
     console.warn('[Sender] Connection unstable/disconnected. Starting auto-recovery...');
 
-    // Pause sending loops
     this.isPaused = true;
-    this.stopRetransmitScheduler();
     this.stopSpeedCalculator();
 
-    // Update status
+    // Update status showing current attempt
     useTransferStore.getState().updateTransferState({
-      errorMessage: 'Connection unstable. Reconnecting...',
+      errorMessage: `Connection unstable. Reconnecting... (Attempt ${this.iceRetryCount + 1}/${this.maxIceRetries})`,
       status: 'connecting',
     });
 
@@ -265,18 +247,23 @@ export class SenderService {
       }
     );
 
-    // Set 5 seconds grace period for auto-recovery, then try ICE Restart
+    // Try ICE Restart with adaptive retry
     this.iceRestartTimeout = setTimeout(async () => {
-      if (this.isReconnecting) {
+      if (this.isReconnecting && this.iceRetryCount < this.maxIceRetries) {
         try {
-          console.warn('[Sender] Auto-recovery grace period expired. Initiating ICE Restart Offer...');
+          this.iceRetryCount++;
+          console.warn(`[Sender] Initiating ICE Restart Offer (Attempt ${this.iceRetryCount}/${this.maxIceRetries})...`);
           const offer = await this.webrtc.initiateIceRestart();
           await this.signalling.sendMessage({ type: 'sdp', sdp: JSON.parse(offer) });
+          
+          useTransferStore.getState().updateTransferState({
+            errorMessage: `Reconnecting... (Attempt ${this.iceRetryCount}/${this.maxIceRetries})`,
+          });
         } catch (err) {
           console.error('[Sender] ICE Restart offer failed:', err);
         }
       }
-    }, 5000);
+    }, this.iceRetryInterval);
 
     // 30 seconds failure timeout
     this.failTimeout = setTimeout(() => {
@@ -327,7 +314,6 @@ export class SenderService {
 
   private streamNextFile() {
     if (this.currentFileIndex >= this.files.length) {
-      // Mark all files as completed
       const finalFiles = useTransferStore.getState().activeFiles.map(f => ({
         ...f,
         progress: 100,
@@ -347,11 +333,7 @@ export class SenderService {
 
     this.currentFileId = fileId;
     this.nextSeqNum = 0;
-    this.sendBase = 0;
-    this.windowSize = 16;
     this.ackedChunks.clear();
-    this.stopRetransmitScheduler();
-    this.inFlight.clear();
     this.pendingPackets = [];
     this.isWaitingForBuffer = false;
 
@@ -362,7 +344,7 @@ export class SenderService {
       mimeType: file.type || 'application/octet-stream',
       totalChunks: this.totalChunks,
       chunkSize,
-      checksum: '', // SHA-256 computed on demand / placeholder
+      checksum: '',
       createdAt: Date.now(),
     };
 
@@ -376,7 +358,6 @@ export class SenderService {
     useTransferStore.getState().updateTransferState({
       status: 'transferring',
       metadata,
-      windowSize: this.windowSize,
       nextToSend: 0,
       inFlightCount: 0,
       bytesSent: 0,
@@ -396,12 +377,7 @@ export class SenderService {
       this.ackedChunks.add(idx);
     });
 
-    while (this.ackedChunks.has(this.sendBase) && this.sendBase < this.totalChunks) {
-      this.sendBase++;
-    }
-    this.nextSeqNum = this.sendBase;
-
-    this.startRetransmitScheduler();
+    this.nextSeqNum = this.ackedChunks.size;
 
     // Spawn chunking worker
     const { file } = this.files[this.currentFileIndex];
@@ -449,17 +425,17 @@ export class SenderService {
       return;
     }
 
+    // Limit worker slicing queue to avoid memory overload
+    const pacingLimit = 32;
+
     while (
       this.nextSeqNum < this.totalChunks &&
-      (this.pendingPackets.length + this.inFlight.size) < this.windowSize
+      (this.pendingPackets.length) < pacingLimit
     ) {
       const seq = this.nextSeqNum;
       
       if (this.ackedChunks.has(seq)) {
         this.nextSeqNum++;
-        while (this.ackedChunks.has(this.sendBase) && this.sendBase < this.totalChunks) {
-          this.sendBase++;
-        }
         continue;
       }
 
@@ -478,7 +454,7 @@ export class SenderService {
     if (this.isPaused || !this.webrtc) return;
     if (this.isWaitingForBuffer) return;
 
-    const limit = 2 * 1024 * 1024; // 2MB safety threshold
+    const limit = 2 * 1024 * 1024; // 2MB safety backpressure threshold
 
     while (this.pendingPackets.length > 0) {
       if (this.webrtc.getBufferedAmount() > limit) {
@@ -495,20 +471,6 @@ export class SenderService {
 
       if (this.ackedChunks.has(chunkIndex)) {
         continue;
-      }
-
-      let chunkObj = this.inFlight.get(chunkIndex);
-      if (chunkObj) {
-        chunkObj.timestamp = Date.now();
-      } else {
-        chunkObj = {
-          data,
-          checksum,
-          timestamp: Date.now(),
-          retries: 0,
-        };
-        this.inFlight.set(chunkIndex, chunkObj);
-        useTransferStore.getState().updateTransferState({ inFlightCount: this.inFlight.size });
       }
 
       const packet = serializeChunk(
@@ -535,23 +497,8 @@ export class SenderService {
   }
 
   private handleAck(chunkIndex: number) {
-    const chunk = this.inFlight.get(chunkIndex);
-    if (!chunk) return;
-
-    // RTT/RTO updates
-    const sampleRTT = Date.now() - chunk.timestamp;
-    this.rtt = 0.9 * this.rtt + 0.1 * sampleRTT;
-    this.rto = Math.max(200, Math.min(5000, this.rtt * 2));
-
-    // Congestion control: Additive Increase
-    this.windowSize = Math.min(this.maxWindowSize, this.windowSize + (1 / Math.floor(this.windowSize)));
-
-    this.inFlight.delete(chunkIndex);
+    if (this.ackedChunks.has(chunkIndex)) return;
     this.ackedChunks.add(chunkIndex);
-
-    while (this.ackedChunks.has(this.sendBase) && this.sendBase < this.totalChunks) {
-      this.sendBase++;
-    }
 
     const metadata = useTransferStore.getState().metadata;
     if (metadata) {
@@ -581,54 +528,15 @@ export class SenderService {
       useTransferStore.getState().updateTransferState({
         bytesSent: actualSent,
         chunksAcked: this.ackedChunks.size,
-        inFlightCount: this.inFlight.size,
-        windowSize: this.windowSize,
-        smoothedRTT: this.rtt,
+        inFlightCount: 0,
         activeFiles: currentActiveFiles,
       });
     }
 
-    if (this.sendBase === this.totalChunks) {
-      // Completed sending all chunks
+    if (this.ackedChunks.size === this.totalChunks) {
       this.finishFileSending();
     } else {
       this.requestMoreChunks();
-    }
-  }
-
-  private handleNack(chunkIndex: number) {
-    console.warn(`[Sender] NACK received for chunk ${chunkIndex}`);
-    const chunk = this.inFlight.get(chunkIndex);
-    if (chunk) {
-      this.pendingPackets.push({
-        chunkIndex,
-        data: chunk.data,
-        checksum: chunk.checksum,
-      });
-      this.sendPendingPackets();
-    }
-  }
-
-  private handleSnack(missing: number[]) {
-    console.warn(`[Sender] SNACK received for missing sequences:`, missing);
-    let queuedAny = false;
-    missing.forEach((seq) => {
-      const chunk = this.inFlight.get(seq);
-      if (chunk) {
-        const alreadyQueued = this.pendingPackets.some(p => p.chunkIndex === seq);
-        if (!alreadyQueued) {
-          this.pendingPackets.push({
-            chunkIndex: seq,
-            data: chunk.data,
-            checksum: chunk.checksum,
-          });
-          queuedAny = true;
-        }
-      }
-    });
-
-    if (queuedAny) {
-      this.sendPendingPackets();
     }
   }
 
@@ -637,8 +545,6 @@ export class SenderService {
       this.worker.terminate();
       this.worker = null;
     }
-    this.stopRetransmitScheduler();
-    this.inFlight.clear();
     this.pendingPackets = [];
 
     // Prompt receiver for verification
@@ -650,66 +556,8 @@ export class SenderService {
 
   private handleFileCompleteAck() {
     console.log(`[Sender] Receiver successfully verified file: ${this.currentFileId}`);
-    
-    // Progress to next file
     this.currentFileIndex++;
     setTimeout(() => this.streamNextFile(), 200);
-  }
-
-  private startRetransmitScheduler() {
-    this.stopRetransmitScheduler();
-    this.retransmitTimer = setInterval(() => {
-      this.checkRetransmissions();
-    }, 150);
-  }
-
-  private stopRetransmitScheduler() {
-    if (this.retransmitTimer) {
-      clearInterval(this.retransmitTimer);
-      this.retransmitTimer = null;
-    }
-  }
-
-  private checkRetransmissions() {
-    if (this.isPaused || useTransferStore.getState().status !== 'transferring') {
-      return;
-    }
-
-    const now = Date.now();
-    let hasRetransmissions = false;
-
-    this.inFlight.forEach((chunk, chunkIndex) => {
-      if (now - chunk.timestamp > this.rto) {
-        chunk.retries++;
-        if (chunk.retries > 10) {
-          console.error('[Sender] Max retransmissions exceeded for chunk:', chunkIndex);
-          useTransferStore.getState().updateTransferState({
-            errorMessage: 'Retransmission timeout limit exceeded.',
-            status: 'error',
-          });
-          this.cleanUp();
-          return;
-        }
-
-        console.warn(`[Sender] Timeout! Retransmitting chunk ${chunkIndex} (Attempt ${chunk.retries}). RTO: ${this.rto.toFixed(0)}ms`);
-        this.windowSize = Math.max(this.minWindowSize, Math.floor(this.windowSize / 2));
-        chunk.timestamp = now;
-
-        const alreadyInPending = this.pendingPackets.some(p => p.chunkIndex === chunkIndex);
-        if (!alreadyInPending) {
-          this.pendingPackets.push({
-            chunkIndex,
-            data: chunk.data,
-            checksum: chunk.checksum,
-          });
-          hasRetransmissions = true;
-        }
-      }
-    });
-
-    if (hasRetransmissions) {
-      this.sendPendingPackets();
-    }
   }
 
   private startSpeedCalculator() {
@@ -760,8 +608,6 @@ export class SenderService {
 
   private pauseLocally() {
     this.isPaused = true;
-    this.stopRetransmitScheduler();
-    this.inFlight.clear();
     this.pendingPackets = [];
     useTransferStore.getState().setTransferStatus('paused');
   }
@@ -805,7 +651,6 @@ export class SenderService {
     this.cleanUp();
     this.files = savedFiles;
     
-    // Set status to connecting.
     useTransferStore.getState().setTransferStatus('connecting');
 
     const activeFiles = this.files.map((f, idx) => ({
@@ -835,9 +680,8 @@ export class SenderService {
 
   cleanUp() {
     this.stopSpeedCalculator();
-    this.stopRetransmitScheduler();
-    this.inFlight.clear();
     this.pendingPackets = [];
+    this.iceRetryCount = 0;
     
     if (this.iceRestartTimeout) {
       clearTimeout(this.iceRestartTimeout);

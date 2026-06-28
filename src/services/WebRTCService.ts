@@ -9,10 +9,29 @@ const getIceServers = (): RTCIceServer[] => {
       }
     }
   }
-  return [
+
+  const stunServers = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
   ];
+
+  // Include TURN servers if configured in env
+  const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+  const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
+  const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
+  if (turnUrl && turnUsername && turnCredential) {
+    return [
+      ...stunServers,
+      {
+        urls: turnUrl.split(','),
+        username: turnUsername,
+        credential: turnCredential,
+      }
+    ];
+  }
+
+  return stunServers;
 };
 
 export class WebRTCService {
@@ -42,8 +61,8 @@ export class WebRTCService {
     };
 
     if (isHost) {
-      // Create DataChannel (unordered as specified in design for custom app-level reliability)
-      this.channel = this.pc.createDataChannel('directshare-channel', { ordered: false });
+      // Create DataChannel with native ordered & reliable delivery enabled
+      this.channel = this.pc.createDataChannel('directshare-channel', { ordered: true });
       this.setupDataChannel(this.channel);
     } else {
       this.pc.ondatachannel = (event) => {

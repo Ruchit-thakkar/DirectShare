@@ -208,3 +208,20 @@ export async function clearHistory(): Promise<void> {
     request.onerror = () => reject(request.error);
   });
 }
+
+export async function cleanupStaleTransfers(): Promise<void> {
+  try {
+    const transfers = await getAllTransfers();
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 24 hours ago
+
+    for (const transfer of transfers) {
+      if (transfer.timestamp < cutoff) {
+        console.log(`[Storage Cleanup] Pruning stale transfer ${transfer.fileId} (${transfer.name})`);
+        await clearChunks(transfer.fileId, transfer.totalChunks);
+        await deleteTransferMetadata(transfer.fileId);
+      }
+    }
+  } catch (err) {
+    console.error('[Storage Cleanup] Failed to run database cleanup:', err);
+  }
+}

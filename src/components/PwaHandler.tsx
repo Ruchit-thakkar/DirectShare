@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Download, WifiOff, X, Sparkles } from 'lucide-react';
+import { cleanupStaleTransfers } from '@/utils/db';
 
 interface BeforeInstallPromptEvent extends Event {
   readonly platforms: string[];
@@ -18,6 +19,9 @@ export default function PwaHandler() {
   const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
+    // Run IndexedDB stale chunks cleanup on startup
+    cleanupStaleTransfers().catch(err => console.error('[Storage Cleanup] Stale cleanup failed:', err));
+
     // 1. Service Worker Registration
     let isMounted = true;
     let registerSW: (() => void) | undefined = undefined;

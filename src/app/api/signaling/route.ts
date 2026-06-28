@@ -12,8 +12,7 @@ interface Room {
   lastActive: number;
 }
 
-// Global in-memory storage for rooms
-// Ensures the store persists across Next.js dev server hot-reloads
+// Global in-memory storage for rooms (Fallback when Redis is not configured)
 const globalForSignaling = globalThis as unknown as {
   signalingRooms?: Map<string, Room>;
 };
@@ -23,8 +22,55 @@ if (!globalForSignaling.signalingRooms) {
 }
 const rooms = globalForSignaling.signalingRooms;
 
-// Prune rooms inactive for more than 1 hour
-function cleanRooms() {
+// Redis REST Config
+const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+const isRedisConfigured = !!(redisUrl && redisToken);
+
+async function getRoom(roomId: string): Promise<Room | undefined> {
+  if (isRedisConfigured) {
+    try {
+      const url = `${redisUrl}/get/rooms:${roomId}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${redisToken}` },
+        cache: 'no-store'
+      });
+      const data = await res.json();
+      if (data && typeof data.result === 'string') {
+        return JSON.parse(data.result) as Room;
+      }
+    } catch (e) {
+      console.error('[Signaling Redis] Get error:', e);
+    }
+  }
+  return rooms.get(roomId);
+}
+
+async function saveRoom(roomId: string, room: Room): Promise<void> {
+  room.lastActive = Date.now();
+  if (isRedisConfigured) {
+    try {
+      const url = `${redisUrl}/set/rooms:${roomId}?ex=3600`; // 1 hour expiration TTL
+      await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${redisToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(JSON.stringify(room)),
+        cache: 'no-store'
+      });
+      return;
+    } catch (e) {
+      console.error('[Signaling Redis] Save error:', e);
+    }
+  }
+  rooms.set(roomId, room);
+}
+
+// Prune local in-memory rooms inactive for more than 1 hour
+function cleanLocalRooms() {
+  if (isRedisConfigured) return;
   const now = Date.now();
   for (const [roomId, room] of rooms.entries()) {
     if (now - room.lastActive > 60 * 60 * 1000) {
@@ -34,17 +80,15 @@ function cleanRooms() {
 }
 
 export async function POST(req: Request) {
-  cleanRooms();
+  cleanLocalRooms();
   try {
     const body = await req.json();
     const { action, roomId, peerId, displayName, message } = body;
-    
-    console.log(`[Signaling] Action: ${action}, RoomId: ${roomId || 'N/A'}, PeerId: ${peerId || 'N/A'}, Active Rooms:`, Array.from(rooms.keys()));
 
     if (action === 'create') {
       const newRoomId = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit code
       const hostId = Math.random().toString(36).substring(2, 11);
-      
+
       const room: Room = {
         roomId: newRoomId,
         hostId,
@@ -56,8 +100,8 @@ export async function POST(req: Request) {
         },
         lastActive: Date.now(),
       };
-      
-      rooms.set(newRoomId, room);
+
+      await saveRoom(newRoomId, room);
       return NextResponse.json({ roomId: newRoomId, peerId: hostId });
     }
 
@@ -65,7 +109,7 @@ export async function POST(req: Request) {
       if (!roomId) {
         return NextResponse.json({ error: 'Room ID is required' }, { status: 400 });
       }
-      const room = rooms.get(roomId);
+      const room = await getRoom(roomId);
       if (!room) {
         return NextResponse.json({ error: 'Room not found' }, { status: 404 });
       }
@@ -77,12 +121,12 @@ export async function POST(req: Request) {
       const clientId = peerId || Math.random().toString(36).substring(2, 11);
       room.clientId = clientId;
       room.clientName = displayName || 'Receiver Device';
-      
+
       if (!room.messages[clientId]) {
         room.messages[clientId] = [];
       }
-      
-      room.lastActive = Date.now();
+
+      await saveRoom(roomId, room);
       return NextResponse.json({ peerId: clientId, hostName: room.hostName });
     }
 
@@ -90,7 +134,7 @@ export async function POST(req: Request) {
       if (!roomId || !peerId || !message) {
         return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
       }
-      const room = rooms.get(roomId);
+      const room = await getRoom(roomId);
       if (!room) {
         return NextResponse.json({ error: 'Room not found' }, { status: 404 });
       }
@@ -103,8 +147,8 @@ export async function POST(req: Request) {
         }
         room.messages[targetPeerId].push(message);
       }
-      
-      room.lastActive = Date.now();
+
+      await saveRoom(roomId, room);
       return NextResponse.json({ success: true });
     }
 
@@ -112,17 +156,17 @@ export async function POST(req: Request) {
       if (!roomId || !peerId) {
         return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
       }
-      const room = rooms.get(roomId);
+      const room = await getRoom(roomId);
       if (!room) {
         return NextResponse.json({ error: 'Room not found' }, { status: 404 });
       }
 
       const messages = room.messages[peerId] || [];
       room.messages[peerId] = []; // Clear read messages
-      room.lastActive = Date.now();
+
+      await saveRoom(roomId, room);
 
       const partnerName = peerId === room.hostId ? room.clientName : room.hostName;
-
       return NextResponse.json({ messages, peerName: partnerName });
     }
 
