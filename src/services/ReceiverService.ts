@@ -494,21 +494,78 @@ export class ReceiverService {
 
   private async reconstructAndDownload(fileId: string, totalChunks: number, fileName: string, fileType: string) {
     const fileSize = this.fileMetadataMap.get(fileId)?.fileSize || 0;
-    const isLargeFile = fileSize > 50 * 1024 * 1024; // > 50MB
 
-    // Check for Service Worker stream downloads (only for large files to avoid SW overhead and localhost issues)
-    if (isLargeFile && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
-      const streamUrl = `/api/download-stream?fileId=${fileId}&name=${encodeURIComponent(fileName)}&type=${encodeURIComponent(fileType)}&size=${fileSize}&totalChunks=${totalChunks}`;
-      const a = document.createElement('a');
-      a.href = streamUrl;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      return;
+    // 1. Try File System Access API (if supported) for a streaming local save
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: fileName,
+        });
+        const writable = await handle.createWritable();
+        
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = await getChunk(fileId, i);
+          if (!chunk) {
+            throw new Error(`Missing chunk ${i} in IndexedDB.`);
+          }
+          await writable.write(chunk);
+        }
+        
+        await writable.close();
+        await clearChunks(fileId, totalChunks);
+        return;
+      } catch (err: any) {
+        // If the user cancelled the file picker, stop here without falling back
+        if (err.name === 'AbortError') {
+          console.log('[Receiver] Save file picker cancelled by user.');
+          return;
+        }
+        console.warn('[Receiver] File System Access API failed or requires user gesture, falling back:', err);
+      }
     }
 
-    // Fallback: Buffer in memory
+    const isLargeFile = fileSize > 50 * 1024 * 1024; // > 50MB
+
+    // 2. Check if Service Worker is active and intercepting download requests
+    let useServiceWorkerStream = false;
+    if (isLargeFile && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      try {
+        const pingRes = await fetch('/api/download-stream?ping=true');
+        if (pingRes.status === 200) {
+          useServiceWorkerStream = true;
+        }
+      } catch (err) {
+        console.warn('[Receiver] SW ping failed, falling back to memory buffer:', err);
+      }
+    }
+
+    if (useServiceWorkerStream) {
+      const streamUrl = `/api/download-stream?fileId=${fileId}&name=${encodeURIComponent(fileName)}&type=${encodeURIComponent(fileType)}&size=${fileSize}&totalChunks=${totalChunks}`;
+      
+      // Use iframe to bypass the browser's link-click SW interception limitation
+      try {
+        let iframe = document.getElementById('sw-download-iframe') as HTMLIFrameElement;
+        if (!iframe) {
+          iframe = document.createElement('iframe');
+          iframe.id = 'sw-download-iframe';
+          iframe.style.display = 'none';
+          document.body.appendChild(iframe);
+        }
+        iframe.src = streamUrl;
+        return;
+      } catch (err) {
+        console.warn('[Receiver] IFrame download failed, falling back to <a> click:', err);
+        const a = document.createElement('a');
+        a.href = streamUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        return;
+      }
+    }
+
+    // 3. Fallback: Buffer in memory
     const chunkArray: ArrayBuffer[] = [];
     for (let i = 0; i < totalChunks; i++) {
       const chunk = await getChunk(fileId, i);

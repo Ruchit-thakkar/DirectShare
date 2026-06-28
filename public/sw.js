@@ -152,6 +152,10 @@ self.addEventListener('fetch', (event) => {
 
   // 1. Intercept stream download requests
   if (url.pathname === '/api/download-stream') {
+    if (url.searchParams.get('ping') === 'true') {
+      event.respondWith(new Response('pong', { status: 200 }));
+      return;
+    }
     event.respondWith(handleStreamDownload(url));
     return;
   }
