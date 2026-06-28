@@ -62,7 +62,8 @@ export class SignallingService {
     // Try WebSocket connection first (FastAPI backend)
     if (typeof window !== 'undefined' && this.roomId && this.peerId) {
       try {
-        const wsUrl = `ws://localhost:8000/ws/signaling/${this.roomId}?peerId=${this.peerId}&role=${this.isHost ? 'sender' : 'receiver'}&displayName=${encodeURIComponent(useStore.getState().displayName || '')}`;
+        const wsBaseUrl = process.env.NEXT_PUBLIC_WS_BACKEND_URL || 'ws://localhost:8000';
+        const wsUrl = `${wsBaseUrl}/ws/signaling/${this.roomId}?peerId=${this.peerId}&role=${this.isHost ? 'sender' : 'receiver'}&displayName=${encodeURIComponent(useStore.getState().displayName || '')}`;
         console.log(`[SignallingService] Attempting WebSocket connection to: ${wsUrl}`);
         this.ws = new WebSocket(wsUrl);
 
